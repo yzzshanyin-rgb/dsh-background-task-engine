@@ -4,6 +4,24 @@ All notable changes to `dsh-background-task-engine` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — 2026-11-26
+
+配置页面。此前八个配置项只能写进 profile 的 `cordis.patch.yml`，插件页里没有入口。
+
+### Added
+
+- 浏览器半 `client/client.js`：在插件详情页注册 `plugins.bundle.config` 卡片（key 为包名），
+  八个字段可编辑、可逐项恢复默认、可查看取值范围与含义。
+- `dsh.client` 与 `exports["./client"]`：声明并暴露浏览器半，`files` 同步收录 `client/`。
+
+### Changed
+
+- **配置字段全部改为 volatile**。宿主因此可以在不重新加载插件的前提下更新配置值，
+  这也是 `dsh-settings` 服务该命名空间的必要条件（只含普通字段的 schema 不会出现在配置页）。
+- 服务层由「构造时读一次数字」改为「每次使用读 `ConfigRef.get()`」，所以配置卡片保存后立即生效。
+  `resolveConfig()` 现在返回引用包，另提供 `configRefs()` / `configValues()` 供默认值与诊断使用。
+- 加载期校验保持严格：越界值仍让插件加载失败；运行期读到漂移的手改值则回退默认，不在工具调用里抛错。
+
 ## [1.0.3] — 2026-11-26
 
 Packaging fixes required for plugin-market listing.

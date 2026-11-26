@@ -16,7 +16,7 @@ import {
   requiredStepsSettled,
 } from '../../src/domain/state.js'
 import { TaskEngineError, sanitizeMessage, toErrorPayload } from '../../src/errors.js'
-import { resolveConfig, DEFAULT_CONFIG } from '../../src/config.js'
+import { resolveConfig, configRefs, configValues, DEFAULT_CONFIG } from '../../src/config.js'
 import { parseTriggerMessage } from '../../src/prompt/guidance.js'
 import { decodeCursor, encodeCursor, isAfterCursor, paginate } from '../../src/utils/page.js'
 import { truncateText, untrustedText } from '../../src/utils/text.js'
@@ -120,11 +120,11 @@ describe('error contract', () => {
 
 describe('configuration validation', () => {
   it('fills documented defaults', () => {
-    expect(resolveConfig(undefined)).toEqual(DEFAULT_CONFIG)
+    expect(configValues(resolveConfig(undefined))).toEqual(DEFAULT_CONFIG)
     const defaults = resolveConfig({})
-    expect(defaults.maxStepsPerTask).toBe(10)
-    expect(defaults.maxParallelRunsPerTask).toBe(1)
-    expect(defaults.historyRetentionDays).toBe(90)
+    expect(defaults.maxStepsPerTask.get()).toBe(10)
+    expect(defaults.maxParallelRunsPerTask.get()).toBe(1)
+    expect(defaults.historyRetentionDays.get()).toBe(90)
   })
 
   it('rejects out-of-range values instead of clamping', () => {

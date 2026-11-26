@@ -80,12 +80,12 @@ export class RunService {
             throw new TaskEngineError('TASK_PERMISSION_DENIED', '任务处于暂停状态，不会执行；请先用 task_update 将 status 设为 active');
         }
         const activeForTask = this.repo.listActiveRunsByTask(task.taskId);
-        if (activeForTask.length >= this.config.maxParallelRunsPerTask) {
+        if (activeForTask.length >= this.config.maxParallelRunsPerTask.get()) {
             throw new TaskEngineError('TASK_ALREADY_RUNNING', `任务 ${task.taskId} 已有运行 ${activeForTask[0].runId} 处于 ${activeForTask[0].status}，暂不能启动新的运行`, { relatedRunId: activeForTask[0].runId });
         }
         const activeForOwner = this.repo.listActiveRunsByOwner(task.ownerSessionId);
-        if (activeForOwner.length >= this.config.maxActiveRunsPerOwner) {
-            throw new TaskEngineError('TASK_MAX_CONCURRENCY', `当前会话活动运行数已达上限 ${this.config.maxActiveRunsPerOwner}，请等待已有运行结束`);
+        if (activeForOwner.length >= this.config.maxActiveRunsPerOwner.get()) {
+            throw new TaskEngineError('TASK_MAX_CONCURRENCY', `当前会话活动运行数已达上限 ${this.config.maxActiveRunsPerOwner.get()}，请等待已有运行结束`);
         }
         const stamp = this.now();
         const runId = newRunId();
@@ -200,9 +200,9 @@ export class RunService {
             return { run, step, deduplicated: true };
         }
         const stamp = this.now();
-        const summary = truncateText(input.summary?.trim(), this.config.maxSummaryChars);
+        const summary = truncateText(input.summary?.trim(), this.config.maxSummaryChars.get());
         const error = input.action === 'failed'
-            ? normaliseError(input.error, 'TASK_STEP_FAILED', this.config.maxSummaryChars)
+            ? normaliseError(input.error, 'TASK_STEP_FAILED', this.config.maxSummaryChars.get())
             : undefined;
         if (input.action === 'started') {
             assertLinearStart(steps, input.stepId);
@@ -266,8 +266,8 @@ export class RunService {
             throw new TaskEngineError('TASK_RUN_ALREADY_FINISHED', `运行 ${run.runId} 已结束（${run.status}），不能重复结束`);
         }
         const steps = this.repo.listSteps(run.runId);
-        const summary = truncateText(input.summary?.trim(), this.config.maxSummaryChars);
-        const error = normaliseError(input.error, input.status === 'succeeded' ? 'TASK_RUN_SUCCEEDED' : 'TASK_RUN_FAILED', this.config.maxSummaryChars);
+        const summary = truncateText(input.summary?.trim(), this.config.maxSummaryChars.get());
+        const error = normaliseError(input.error, input.status === 'succeeded' ? 'TASK_RUN_SUCCEEDED' : 'TASK_RUN_FAILED', this.config.maxSummaryChars.get());
         if (input.status === 'succeeded') {
             const settled = requiredStepsSettled(steps);
             if (!settled.ok) {
@@ -344,12 +344,12 @@ export class RunService {
             throw new TaskEngineError('TASK_PERMISSION_DENIED', '任务已归档，不能恢复运行');
         }
         const activeForTask = this.repo.listActiveRunsByTask(source.taskId);
-        if (activeForTask.length >= this.config.maxParallelRunsPerTask) {
+        if (activeForTask.length >= this.config.maxParallelRunsPerTask.get()) {
             throw new TaskEngineError('TASK_ALREADY_RUNNING', `任务 ${source.taskId} 已有活动运行 ${activeForTask[0].runId}，不能同时启动恢复`, { relatedRunId: activeForTask[0].runId });
         }
         const activeForOwner = this.repo.listActiveRunsByOwner(source.taskOwnerSessionId);
-        if (activeForOwner.length >= this.config.maxActiveRunsPerOwner) {
-            throw new TaskEngineError('TASK_MAX_CONCURRENCY', `当前会话活动运行数已达上限 ${this.config.maxActiveRunsPerOwner}`);
+        if (activeForOwner.length >= this.config.maxActiveRunsPerOwner.get()) {
+            throw new TaskEngineError('TASK_MAX_CONCURRENCY', `当前会话活动运行数已达上限 ${this.config.maxActiveRunsPerOwner.get()}`);
         }
         const stamp = this.now();
         const runId = newRunId();
@@ -427,7 +427,7 @@ export class RunService {
     // --------------------------------------------------------------- history
     history(input) {
         const task = this.repo.requireOwnedTask(input.taskId, input.sessionId);
-        const cutoff = daysAgoIso(this.config.historyRetentionDays);
+        const cutoff = daysAgoIso(this.config.historyRetentionDays.get());
         const runs = this.repo
             .listRunsByTask(task.taskId)
             .filter((run) => run.startedAt >= cutoff)
@@ -477,7 +477,7 @@ export class RunService {
         const interrupted = [];
         const stamp = this.now();
         for (const run of runs) {
-            if (!isOlderThanMinutes(run.updatedAt, this.config.staleRunAfterMinutes))
+            if (!isOlderThanMinutes(run.updatedAt, this.config.staleRunAfterMinutes.get()))
                 continue;
             const steps = this.repo.listSteps(run.runId);
             for (const step of steps) {
@@ -507,7 +507,7 @@ export class RunService {
                 finishedAt: stamp,
                 error: {
                     code: 'TASK_RUN_INTERRUPTED',
-                    message: `运行在 ${run.status} 状态超过 ${this.config.staleRunAfterMinutes} 分钟未更新，已标记 interrupted`,
+                    message: `运行在 ${run.status} 状态超过 ${this.config.staleRunAfterMinutes.get()} 分钟未更新，已标记 interrupted`,
                 },
                 currentStepId: undefined,
             }));
@@ -531,7 +531,7 @@ export class RunService {
      * information and every active run are preserved.
      */
     async prune() {
-        const cutoff = daysAgoIso(this.config.historyRetentionDays);
+        const cutoff = daysAgoIso(this.config.historyRetentionDays.get());
         let runs = 0;
         let steps = 0;
         for (const run of this.repo.listRuns()) {

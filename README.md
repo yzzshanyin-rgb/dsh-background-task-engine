@@ -128,7 +128,14 @@ TaskRun  queued → running → succeeded | failed | blocked | interrupted
 
 ## 配置
 
+八个数值都在「**设置 → 插件 → dsh-background-task-engine**」的配置卡片里改，**保存后立即生效，无需重启**。
+也可以直接写 profile 的 `cordis.patch.yml`；两条路径写的是同一份配置。
+
 以 `Config`（Schemastery）导出，并在加载时二次校验；越界值会让加载失败，而不是被静默截断。
+
+> **为什么保存能立即生效**：每个字段都声明为 volatile，宿主因此把配置作为可原地更新的引用交给插件，
+> 插件每次使用都读当前值。volatile 也是配置卡片存在的前提——`dsh-settings` 只服务至少含一个
+> volatile 字段的命名空间，全是普通字段的 schema 在插件页里根本画不出表单。
 
 | 配置项 | 默认 | 范围 | 含义 |
 |---|---|---|---|

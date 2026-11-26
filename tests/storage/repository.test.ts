@@ -17,7 +17,7 @@ import {
   type Migration,
 } from '../../src/storage/spec.js'
 import { Repository } from '../../src/storage/repository.js'
-import { DEFAULT_CONFIG } from '../../src/config.js'
+import { configRefs } from '../../src/config.js'
 import { SCHEMA_VERSION, type GlobalState, type RunRecord, type TaskRecord } from '../../src/domain/records.js'
 import { AuditTrail } from '../../src/services/audit.js'
 import { RunService } from '../../src/services/run-service.js'
@@ -246,7 +246,7 @@ describe('retention pruning', () => {
   function buildRunService(domain: FakeDomain, now: string): RunService {
     const repo = new Repository(domain as never, () => now)
     const audit = new AuditTrail({ emit: () => undefined, inject: () => undefined } as never)
-    return new RunService(repo, DEFAULT_CONFIG, audit, () => now)
+    return new RunService(repo, configRefs(), audit, () => now)
   }
 
   it('removes only old terminal runs and never an active one', async () => {
@@ -310,7 +310,7 @@ describe('startup recovery', () => {
     })
 
     const audit = new AuditTrail({ emit: () => undefined, inject: () => undefined } as never)
-    const service = new RunService(repo, DEFAULT_CONFIG, audit, () => new Date().toISOString())
+    const service = new RunService(repo, configRefs(), audit, () => new Date().toISOString())
     const result = await service.recoverStale()
     expect(result.interrupted).toEqual(['run_stale0000000000001'])
     expect(repo.getRun('run_stale0000000000001')!.status).toBe('interrupted')
@@ -340,7 +340,7 @@ describe('startup recovery', () => {
       schemaVersion: SCHEMA_VERSION,
     })
     const audit = new AuditTrail({ emit: () => undefined, inject: () => undefined } as never)
-    const service = new RunService(repo, DEFAULT_CONFIG, audit, () => now)
+    const service = new RunService(repo, configRefs(), audit, () => now)
     expect((await service.recoverStale()).interrupted).toEqual([])
     expect(repo.getRun('run_fresh0000000000001')!.status).toBe('running')
   })

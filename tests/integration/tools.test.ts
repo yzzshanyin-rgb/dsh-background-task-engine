@@ -531,7 +531,7 @@ describe('recovery semantics (PRD 14.4)', () => {
         logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
         inject: () => undefined,
       },
-      { ...(await import('../../src/config.js')).DEFAULT_CONFIG },
+      (await import('../../src/config.js')).configRefs(),
     )
     await engine.ready
 

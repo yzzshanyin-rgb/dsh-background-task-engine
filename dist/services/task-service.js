@@ -50,8 +50,8 @@ export class TaskService {
         }
         const description = truncateText((input.description ?? source?.description ?? '').trim(), 2000) || undefined;
         const existing = this.repo.countUnarchivedTasks(owner);
-        if (existing >= this.config.maxTasksPerOwner) {
-            throw new TaskEngineError('TASK_PERMISSION_DENIED', `当前会话可保留的未归档任务已达上限 ${this.config.maxTasksPerOwner}，请先归档不再使用的任务`);
+        if (existing >= this.config.maxTasksPerOwner.get()) {
+            throw new TaskEngineError('TASK_PERMISSION_DENIED', `当前会话可保留的未归档任务已达上限 ${this.config.maxTasksPerOwner.get()}，请先归档不再使用的任务`);
         }
         const stamp = this.now();
         const record = {
@@ -82,8 +82,8 @@ export class TaskService {
         if (!Array.isArray(rawSteps)) {
             throw new TaskEngineError('TASK_INVALID_STEPS', 'steps 必须是数组');
         }
-        if (rawSteps.length > this.config.maxStepsPerTask) {
-            throw new TaskEngineError('TASK_INVALID_STEPS', `步骤数量 ${rawSteps.length} 超过上限 ${this.config.maxStepsPerTask}（V1.0 为线性任务，最多 10 步）`);
+        if (rawSteps.length > this.config.maxStepsPerTask.get()) {
+            throw new TaskEngineError('TASK_INVALID_STEPS', `步骤数量 ${rawSteps.length} 超过上限 ${this.config.maxStepsPerTask.get()}（V1.0 为线性任务，最多 10 步）`);
         }
         const parsed = [];
         for (const [index, candidate] of rawSteps.entries()) {
