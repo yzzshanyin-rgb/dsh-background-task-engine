@@ -4,6 +4,21 @@ All notable changes to `dsh-background-task-engine` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] — 2026-11-26
+
+Packaging fixes required for plugin-market listing.
+
+### Changed
+
+- `@deepseek-ai/schemastery` moved from `dependencies` to `peerDependencies`
+  (also kept in `devDependencies` for local builds). It is a host-provided
+  `@deepseek-ai/*` package, so declaring it as a peer avoids shipping a second
+  copy and follows the market guidance. `zod` stays a regular dependency because
+  record schemas are validated in-process regardless of the host.
+- Added `assets/icon-180.png`: the market accepts raster icons only
+  (`png`/`jpg`/`jpeg`/`webp`) and refuses SVG, so a 180×180 PNG is now shipped
+  alongside `icon.svg` (which the DSH plugin list still uses).
+
 ## [1.0.2] — 2026-11-26
 
 Documentation release: the default README is now Chinese.

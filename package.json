@@ -1,6 +1,6 @@
 {
   "name": "dsh-background-task-engine",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "DSH 后台任务引擎：可复用任务模板、线性步骤、持久化运行账本、进度与历史查询、失败/中断恢复，可选关联 DSH 原生定时任务。",
   "keywords": [
     "deepseek-harness",
@@ -30,6 +30,7 @@
     "locale/*.json",
     "docs",
     "icon.svg",
+    "screenshots.json",
     "README.md",
     "README.en.md",
     "CHANGELOG.md",
@@ -51,13 +52,13 @@
     }
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.5",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "@deepseek-ai/schemastery": "^3.18.5"
   },
   "engines": {
     "node": ">=20"
@@ -69,5 +70,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "prepublishOnly": "npm run clean && npm run build"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.5"
   }
 }
