@@ -1,6 +1,6 @@
 {
   "name": "dsh-background-task-engine",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Durable background task engine for DeepSeek Harness: task templates, linear step runs, persisted progress, failure recovery and optional DSH Schedule linkage.",
   "keywords": [
     "deepseek-harness",
