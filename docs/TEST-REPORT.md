@@ -133,6 +133,24 @@ Practical consequence: run `npm install` in the package directory before
 registry spec (`dsh-background-task-engine@1.0.0`) once published — it carries its
 own `node_modules` and does not depend on the checkout.
 
+## 1.0.2 (README language) verification
+
+Documentation-only release; code is unchanged from 1.0.0/1.0.1.
+
+| Check | Result |
+|---|---|
+| `README.md` default language | Chinese |
+| English document | `README.en.md`, with a language switch in both files |
+| Heading anchors in the Chinese table of contents | all 10 resolve to real headings |
+| Code fences | 12 per file, balanced |
+| File links (`LICENSE`, `docs/*`, `README.en.md`) | all exist |
+| `package.json` `description` | Chinese, matches the README |
+| `files` list | `README.en.md` replaces the removed `README.zh.md` |
+| `npm pack` contents | both `README.md` (12.5 kB) and `README.en.md` (12.8 kB) present |
+| Published `1.0.2` installed from registry | `README.md` inside the package is Chinese; `description` Chinese |
+| Build + tests | BUILD OK, 81/81 |
+| Profile install of `1.0.2` | `application: applied`, 12/12 tools |
+
 ## Test inventory
 
 Every assertion from the last full run is listed below.
