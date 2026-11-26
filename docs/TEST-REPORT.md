@@ -101,6 +101,38 @@ must stay a regular dependency (every installed community plugin that defines a
 `Config` declares it the same way), and the shipped `dist/` is byte-identical to a
 fresh build, so the published artifact cannot drift from source.
 
+## Published artifact verification (npm)
+
+After `npm publish` (registry confirms `dsh-background-task-engine@1.0.0`,
+`dist-tags.latest = 1.0.0`, maintainer `anishuodedui`), the **published** package
+was verified independently of the checkout:
+
+| Check | Result |
+|---|---|
+| `npm view dsh-background-task-engine version` | `1.0.0`, `latest = 1.0.0` |
+| `npm install dsh-background-task-engine@1.0.0` into a clean project | 5 packages, no errors |
+| Load the installed copy | 26 exports; `name` / `inject` as documented |
+| `apply()` on the installed copy | **12/12 tools register** |
+| `Config({})` on the installed copy | documented defaults |
+| Install into the real desktop profile (`@1.0.0`, not a link) | **`application: applied`**, `warnings: []` |
+| Profile copy shape | real directory from the registry (not a symlink), own `node_modules` |
+| Display resources in the installed copy | `locale/{en,zh}.json`, `icon.svg`, `docs/DETAIL{,.zh}.md`, `docs/preview.svg` all present |
+| Locale titles | `Background task engine` / `后台任务引擎` |
+
+### One installation hazard worth recording
+
+`@deepseek-ai/schemastery` resolves only if the dependency is installed. When the
+bundle was installed as a **registry** package immediately after the workspace
+`node_modules` had been removed, the loader resolved through the stale workspace
+path and failed with `ERR_MODULE_NOT_FOUND: Cannot find package
+'@deepseek-ai/schemastery'`. Restoring the workspace dependencies and
+reinstalling from the registry produced a clean `application: applied`.
+
+Practical consequence: run `npm install` in the package directory before
+`plugin_manager install_bundle` when handing it a directory path, and prefer the
+registry spec (`dsh-background-task-engine@1.0.0`) once published — it carries its
+own `node_modules` and does not depend on the checkout.
+
 ## Test inventory
 
 Every assertion from the last full run is listed below.
