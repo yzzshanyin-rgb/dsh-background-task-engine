@@ -17,29 +17,27 @@ npm test               # vitest run
 |---|---|---|---|
 | Domain (state machine) | `tests/domain/state.test.ts` | 22 | PASS |
 | Domain (configuration) | `tests/domain/config.test.ts` | 7 | PASS |
-| Storage (records + migrations) | `tests/storage/repository.test.ts` | 17 | PASS |
+| Storage (records + migrations) | `tests/storage/repository.test.ts` | 18 | PASS |
 | Services (time zones) | `tests/services/schedule-time.test.ts` | 13 | PASS |
 | Rendering | `tests/tools/render.test.ts` | 13 | PASS |
-| Integration (tools) | `tests/integration/tools.test.ts` | 33 | PASS |
+| Integration (tools) | `tests/integration/tools.test.ts` | 35 | PASS |
 | Integration (reliability) | `tests/integration/reliability.test.ts` | 14 | PASS |
 | Integration (board routes) | `tests/integration/http-routes.test.ts` | 8 | PASS |
 | Integration (client bundle) | `tests/integration/client-bundle.test.ts` | 17 | PASS |
-| **Total** | 9 files | **144** | **all passing** |
+| **Total** | 9 files | **147** | **all passing** |
 
 ```console
 $ npx vitest run
- ✓ tests/domain/state.test.ts (22 tests)
- ✓ tests/integration/client-bundle.test.ts (17 tests)
- ✓ tests/storage/repository.test.ts (17 tests)
- ✓ tests/integration/http-routes.test.ts (8 tests)
- ✓ tests/integration/reliability.test.ts (14 tests)
- ✓ tests/tools/render.test.ts (13 tests)
- ✓ tests/services/schedule-time.test.ts (13 tests)
- ✓ tests/integration/tools.test.ts (33 tests)
- ✓ tests/domain/config.test.ts (7 tests)
-
- Test Files  9 passed (9)
-      Tests  144 passed (144)
+✓ tests/domain/state.test.ts (22 tests) 5ms
+ ✓ tests/integration/client-bundle.test.ts (17 tests) 137ms
+ ✓ tests/storage/repository.test.ts (18 tests) 16ms
+ ✓ tests/services/schedule-time.test.ts (13 tests) 28ms
+ ✓ tests/integration/http-routes.test.ts (8 tests) 33ms
+ ✓ tests/integration/reliability.test.ts (14 tests) 53ms
+ ✓ tests/tools/render.test.ts (13 tests) 63ms
+ ✓ tests/integration/tools.test.ts (35 tests) 146ms
+ ✓ tests/domain/config.test.ts (7 tests) 5ms
+      Tests  147 passed (147)
 ```
 
 ## V1.2.0 acceptance matrix
@@ -303,3 +301,35 @@ Every assertion from the last full run is listed below.
 - `PASS` tool rendering (what the model sees) renders every tool without throwing on a failure envelope
 - `PASS` schedule adapter failure mapping maps host rejections to TASK_SCHEDULE_FAILED with a sanitised message
 - `PASS` schedule adapter failure mapping treats a missing host entry as already gone rather than a hard failure
+## Upgrade regression (1.1.1 data → 1.2.x)
+
+The JSON backend stamps the unit version in the file header and refuses to load a
+file when that version is neither the declared one nor listed in
+`compatibleVersions` (`version-mismatch`). 1.2.0/1.2.1 declared version 2 without
+listing 1, so a real 1.1.1 profile failed to open its own data — the engine stopped
+at "storage not ready" and every tool refused to run. `createDomainSpec()` now
+declares `compatibleVersions: [1]`.
+
+Verified against a copy of the real 1.1.1 data file on this machine:
+
+```console
+$ ELECTRON_RUN_AS_NODE=1 "$DSH_NODE_EXECUTABLE" /tmp/v12-upgrade.mjs
+v1 file: unit version 1 | tasks 1 | runs 2
+storage: true | integrity: ok | schema: 2 | tasks: 1 | runs: 2
+after: unit version 2 | tables 8 | meta schemaVersion 2
+migrated applied: {"v2-run-liveness-defaults":"…","v2-build-indexes":"…","v2-step-retry-policy":"…"}
+step retryPolicy present: true
+run executionGeneration present: true
+run statuses untouched: ["succeeded"]
+```
+
+And against the live Desktop profile after installing 1.2.2:
+
+```console
+$ curl 'http://127.0.0.1:64574/dsh-background-task/api/status?session=…'
+{"success":true,"storageAvailable":true,"scheduleAvailable":true,…,"integrityStatus":"ok",
+ "lastRecoveryScanAt":"2026-11-26T08:33:29.515Z","unsettledScheduleOps":0}
+```
+
+The live data file kept its 1 task / 2 runs / 6 steps, unit version became 2, and
+the three v2 migrations plus the schedule reconcile and recovery scan all ran.

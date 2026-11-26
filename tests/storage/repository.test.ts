@@ -382,3 +382,14 @@ describe('facility wiring', () => {
     ).rejects.toThrow(/未挂载 Schedule/)
   })
 })
+
+describe('domain spec version gate', () => {
+  // The host's JSON backend refuses to load a file whose stored unit version is
+  // neither the declared version nor listed in compatibleVersions. Without the
+  // listing, upgrading the schema version makes every 1.1.x install fail to start.
+  it('accepts files written by 1.1.x so migrations can upgrade them', () => {
+    const spec = createDomainSpec()
+    expect(spec.version).toBe(2)
+    expect(spec.compatibleVersions).toEqual([1])
+  })
+})
