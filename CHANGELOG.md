@@ -4,6 +4,20 @@ All notable changes to `dsh-background-task-engine` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] — 2026-11-26
+
+配置卡片的命名空间发现改为按事实判断，而不是假设行 id。
+
+### Changed
+
+- 卡片注册前的命名空间解析改为订阅 `configForms.describe()` 镜像：优先用 profile 行 id
+  （`background-task-engine` / 包名），找不到时按 schema 特征（八个配置字段名）认领。
+  行 id 被改写、或宿主调整 id 规则时，配置卡片仍然出现；完全不相关的命名空间不会被误认。
+
+### Tests
+
+- 新增两项：行 id 无关但 schema 匹配时认领成功；服务中的命名空间与本插件无关时不注册卡片（100 项全通过）。
+
 ## [1.1.0] — 2026-11-26
 
 配置页面。此前八个配置项只能写进 profile 的 `cordis.patch.yml`，插件页里没有入口。

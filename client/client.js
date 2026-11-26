@@ -400,32 +400,77 @@ window.__ModuleLoader__.load({
         // 而不是渲染一个点不动的表单。
         ctx.inject(['configForms'], function (scoped) {
           var forms = scoped.configForms
-          if (!forms || typeof forms.get !== 'function' || typeof forms.whileServed !== 'function') return
+          if (!forms || typeof forms.get !== 'function') return
+
+          var registeredFor = null
+          var disposeSlot = null
+
+          /** 从 dsh-settings 的 describe 镜像里挑出本插件自己的命名空间。 */
+          function detectNamespace() {
+            var mirror = typeof forms.describe === 'function' ? forms.describe() : undefined
+            var snapshot = mirror && typeof mirror.getSnapshot === 'function' ? mirror.getSnapshot() : undefined
+            var view = snapshot && snapshot.view
+            var rows = view && Array.isArray(view.namespaces) ? view.namespaces : []
+
+            var names = []
+            for (var i = 0; i < rows.length; i++) {
+              if (rows[i] && rows[i].ns !== undefined) names.push(rows[i].ns)
+            }
+            // 首选 profile 行 id：与 cordis.patch.yml 的 id 一致。
+            for (var j = 0; j < ROW_IDS.length; j++) {
+              if (names.indexOf(ROW_IDS[j]) >= 0) return ROW_IDS[j]
+            }
+            // 兜底：按 schema 特征认领。行 id 被用户覆盖（或宿主换了 id 规则）时，
+            // 仍能认出属于本插件的配置项，而不是干脆没有卡片。
+            for (var k = 0; k < rows.length; k++) {
+              var row = rows[k]
+              if (!row || row.ns === undefined) continue
+              var probe = ''
+              try {
+                probe = JSON.stringify(row.schema === undefined ? {} : row.schema)
+              } catch (error) {
+                probe = ''
+              }
+              if (probe.indexOf('maxTasksPerOwner') >= 0) return row.ns
+            }
+            return undefined
+          }
+
+          function registerOnce() {
+            if (registeredFor !== null) return
+            var namespace = detectNamespace()
+            if (namespace === undefined) return
+            registeredFor = namespace
+            var form = forms.get(namespace)
+            disposeSlot = scoped.slots.inject('plugins.bundle.config', function () {
+              return scoped.slots.register(
+                {
+                  name: 'plugins.bundle.config',
+                  key: PACKAGE_NAME,
+                  inject: function () {
+                    return { form: form }
+                  },
+                },
+                ConfigCard,
+              )
+            })
+          }
 
           scoped.effect(
             function () {
-              return forms.whileServed(ROW_IDS, function (served) {
-                var namespace = ROW_IDS[0]
-                for (var i = 0; i < ROW_IDS.length; i++) {
-                  if (served !== undefined && typeof served.has === 'function' && served.has(ROW_IDS[i])) {
-                    namespace = ROW_IDS[i]
-                    break
-                  }
-                }
-                var form = forms.get(namespace)
-                return scoped.slots.inject('plugins.bundle.config', function () {
-                  return scoped.slots.register(
-                    {
-                      name: 'plugins.bundle.config',
-                      key: PACKAGE_NAME,
-                      inject: function () {
-                        return { form: form }
-                      },
-                    },
-                    ConfigCard,
-                  )
-                })
-              })
+              var mirror = typeof forms.describe === 'function' ? forms.describe() : undefined
+              if (mirror && typeof mirror.ensure === 'function') mirror.ensure()
+              var unsubscribe =
+                mirror && typeof mirror.subscribe === 'function'
+                  ? mirror.subscribe(registerOnce)
+                  : function () {}
+              registerOnce()
+              return function () {
+                unsubscribe()
+                if (typeof disposeSlot === 'function') disposeSlot()
+                disposeSlot = null
+                registeredFor = null
+              }
             },
             'dsh-background-task-engine: configuration card',
           )

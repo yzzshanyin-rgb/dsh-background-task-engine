@@ -197,15 +197,27 @@ function mountClient(form: FakeForm, served: string[]): Harness {
     },
   }
 
+  // Mirrors the real `configForms.describe()` contract: a snapshot of the
+  // served namespaces, keyed by profile row id, each carrying its schema.
+  const mirror = {
+    getSnapshot: () => ({
+      view: {
+        namespaces: served.map((ns) => ({
+          ns,
+          schema: ns.includes('stranger') ? { type: 'object', properties: { apiKey: { type: 'string' } } } : FORM_SCHEMA,
+        })),
+      },
+    }),
+    ensure: () => undefined,
+    subscribe: () => () => undefined,
+  }
+
   const forms = {
     get(namespace: string) {
       servedWith.push(namespace)
       return form
     },
-    whileServed(namespaces: string[], register: (served: Set<string>) => unknown) {
-      return register(new Set(served))
-    },
-    describe: () => ({ getSnapshot: () => ({ view: undefined }) }),
+    describe: () => mirror,
   }
 
   const ctx = {
@@ -224,6 +236,20 @@ function mountClient(form: FakeForm, served: string[]): Harness {
   exports.apply(ctx)
 
   return { module: windowStub.__ModuleLoader__, registrations, servedWith, render, React }
+}
+
+const FORM_SCHEMA = {
+  type: 'object',
+  properties: {
+    maxTasksPerOwner: { type: 'number' },
+    maxStepsPerTask: { type: 'number' },
+    maxActiveRunsPerOwner: { type: 'number' },
+    maxParallelRunsPerTask: { type: 'number' },
+    defaultTimeoutMinutes: { type: 'number' },
+    staleRunAfterMinutes: { type: 'number' },
+    historyRetentionDays: { type: 'number' },
+    maxSummaryChars: { type: 'number' },
+  },
 }
 
 const DEFAULTS = {
@@ -262,6 +288,19 @@ describe('client bundle registration', () => {
   it('falls back to the package name when the row id is overridden', () => {
     const harness = mountClient(createForm(DEFAULTS), [PACKAGE_NAME])
     expect(harness.servedWith).toEqual([PACKAGE_NAME])
+  })
+
+  it('claims a namespace by schema when the row id is unrelated', () => {
+    // A user who renames the row id still gets a card: the schema is the
+    // identity of the plugin's own settings.
+    const harness = mountClient(createForm(DEFAULTS), ['some-custom-bundle'])
+    expect(harness.registrations).toHaveLength(1)
+    expect(harness.servedWith).toEqual(['some-custom-bundle'])
+  })
+
+  it('stays out when no served namespace carries these fields', () => {
+    const harness = mountClient(createForm(DEFAULTS), ['stranger'])
+    expect(harness.registrations).toHaveLength(0)
   })
 
   it('stays out of the summary view', () => {
