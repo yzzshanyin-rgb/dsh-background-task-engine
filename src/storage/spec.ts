@@ -44,6 +44,12 @@ export function createDomainSpec(): Record<string, unknown> {
   return {
     name: DOMAIN_NAME,
     version: SCHEMA_VERSION,
+    // The host's JSON backend refuses to load a file whose stored unit version
+    // differs from the descriptor and is not listed here ("version-mismatch"),
+    // and it keeps the stored version on write. Listing 1 lets a 1.1.x file open
+    // so the v2 migrations can upgrade it in place; without this the plugin
+    // refuses to start once the schema version is bumped.
+    compatibleVersions: [1],
     tables: {
       [TABLES.tasks]: { valueSchema: taskRecordSchema },
       [TABLES.runs]: { valueSchema: runRecordSchema },

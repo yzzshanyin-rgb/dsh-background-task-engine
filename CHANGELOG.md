@@ -4,6 +4,24 @@ All notable changes to `dsh-background-task-engine` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] — 2026-11-26
+
+修一个会让升级后插件直接起不来的问题。
+
+### Fixed
+
+- 存储单元声明的 `compatibleVersions: [1]`。宿主的 JSON 后端在加载时把文件头里的
+  `unit.version` 与声明版本比对，不一致且不在 `compatibleVersions` 里就抛 `version-mismatch`；
+  1.1.x 的数据文件是版本 1，而 1.2.x 声明版本 2 —— 结果 `ctx.storageDomain.open()` 失败，
+  引擎停在“存储未初始化”，工具全部不可用（真实 profile 上就是这样）。
+  现在 1.1.x 的文件可以正常打开，三条 v2 迁移就地升级，写回后版本自然变成 2。
+
+### Tests
+
+- 新增 1 项：声明版本与 `compatibleVersions` 的契约断言。
+- 真实宿主回归：把 1.1.1 留下的真实数据文件复制一份，用 1.2.x 打开 —— 1 个任务、2 次运行
+  全部保留，状态不变，`retryPolicy`/`executionGeneration` 回填，8 张表，完整性 ok。
+
 ## [1.2.1] — 2026-11-26
 
 让执行凭证真的可用。
