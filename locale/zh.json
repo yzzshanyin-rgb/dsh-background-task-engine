@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "后台任务引擎",
+    "description": "可复用的任务模板与线性步骤、持久化的运行账本、进度与历史查询、失败/中断后的人工恢复，并可选关联 DSH 原生定时任务。提供 12 个 task_* 工具；任务数据存放在 StorageDomain 中，只有创建它的 Session 可见。",
+    "detail": "docs/DETAIL.zh.md"
+  }
+}

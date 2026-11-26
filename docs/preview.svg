@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="300" viewBox="0 0 640 300" role="img" aria-label="A task template with three ordered steps is started, producing one run ledger whose first two required steps are completed and whose third is now running.">
+  <rect width="640" height="300" fill="none"/>
+
+  <!-- ================= LEFT: the reusable template ================= -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="44" y="62" width="188" height="196" rx="13" fill="#FBFCFE" stroke="#3D4A5C" stroke-width="2.6"/>
+    <!-- header band: fill only, then one separator, so no double edge appears -->
+    <path d="M44 75a13 13 0 0 1 13-13h162a13 13 0 0 1 13 13v15H44z" fill="#E8EEF6" stroke="none"/>
+    <path d="M44 90h188" stroke="#3D4A5C" stroke-width="2.6"/>
+
+    <!-- step rows: fixed geometry, no overlaps -->
+    <g stroke="#3D4A5C" stroke-width="2.2">
+      <rect x="62" y="106" width="152" height="38" rx="8" fill="#FFFFFF"/>
+      <rect x="62" y="154" width="152" height="38" rx="8" fill="#FFFFFF"/>
+      <rect x="62" y="202" width="152" height="38" rx="8" fill="#FFFFFF"/>
+    </g>
+    <!-- order numbers are drawn as dots, not glyphs -->
+    <g fill="#BBD3DE" stroke="none">
+      <circle cx="76" cy="125" r="3.4"/>
+      <circle cx="76" cy="173" r="3.4"/>
+      <circle cx="76" cy="221" r="3.4"/>
+    </g>
+    <!-- instruction lines -->
+    <g stroke="#8A97A8" stroke-width="2.2" stroke-linecap="round">
+      <path d="M88 121h108M88 131h68"/>
+      <path d="M88 169h108M88 179h52"/>
+      <path d="M88 217h108M88 227h76"/>
+    </g>
+  </g>
+
+  <!-- ================= MIDDLE: the start action ================= -->
+  <g fill="none" stroke="#3D4A5C" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M258 160h56"/>
+    <path d="M308 152l10 8-10 8"/>
+  </g>
+  <g>
+    <circle cx="286" cy="150" r="0" fill="none"/>
+  </g>
+
+  <!-- ================= RIGHT: the run ledger ================= -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="356" y="62" width="240" height="196" rx="13" fill="#FBFCFE" stroke="#3D4A5C" stroke-width="2.6"/>
+    <path d="M356 75a13 13 0 0 1 13-13h214a13 13 0 0 1 13 13v15H356z" fill="#E3F0E9" stroke="none"/>
+    <path d="M356 90h240" stroke="#3D4A5C" stroke-width="2.6"/>
+    <!-- run marker in the header -->
+    <path d="M372 73h74" stroke="#2F7A57" stroke-width="3.2"/>
+
+    <!-- progress bar: 66% of required steps -->
+    <rect x="374" y="106" width="204" height="13" rx="6.5" fill="#E4E9F0" stroke="none"/>
+    <rect x="374" y="96" width="136" height="13" rx="6.5" fill="#2F7A57" stroke="none"/>
+
+    <!-- step 1 carried over as completed -->
+    <circle cx="390" cy="144" r="10" fill="#E3F0E9" stroke="none"/>
+    <path d="M385 144l3.6 3.6 6.4-7.2" stroke="#2F7A57" stroke-width="2.4"/>
+    <path d="M410 139h164M410 151h96" stroke="#8A97A8" stroke-width="2.2"/>
+
+    <!-- step 2 carried over as completed -->
+    <circle cx="390" cy="186" r="10" fill="#E3F0E9" stroke="none"/>
+    <path d="M385 186l3.6 3.6 6.4-7.2" stroke="#2F7A57" stroke-width="2.4"/>
+    <path d="M410 181h164M410 193h72" stroke="#8A97A8" stroke-width="2.2"/>
+
+    <!-- step 3 currently running -->
+    <circle cx="390" cy="228" r="10" fill="#FAF1DE" stroke="#C08A2E" stroke-width="2.4"/>
+    <path d="M387 223v10l8.4-5z" fill="#C08A2E" stroke="none"/>
+    <path d="M410 223h164M410 235h60" stroke="#C2CBD8" stroke-width="2.2"/>
+  </g>
+
+</svg>

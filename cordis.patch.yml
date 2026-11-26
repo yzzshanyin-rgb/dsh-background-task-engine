@@ -1,0 +1,20 @@
+# dsh-background-task-engine bundle patch.
+#
+# The patch registers the plugin into a profile. `plugin_manager install_bundle`
+# appends this row to the profile's cordis.patch.yml and installs the package.
+#
+# `config` mirrors src/config.ts (Schemastery). Every value below is validated
+# again at load time; out-of-range values fail the plugin load instead of being
+# silently clamped.
+- insert:
+    - id: background-task-engine
+      name: 'dsh-background-task-engine'
+      config:
+        maxTasksPerOwner: 100
+        maxStepsPerTask: 10
+        maxActiveRunsPerOwner: 3
+        maxParallelRunsPerTask: 1
+        defaultTimeoutMinutes: 60
+        staleRunAfterMinutes: 30
+        historyRetentionDays: 90
+        maxSummaryChars: 2000

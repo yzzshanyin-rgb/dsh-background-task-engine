@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Background task engine",
+    "description": "Durable task templates with ordered steps, a persisted run ledger, progress and history queries, failure/interruption recovery, and optional native DSH Schedule linkage. Exposes 12 task_* tools; task data is stored in a StorageDomain and stays private to the Session that created it.",
+    "detail": "docs/DETAIL.md"
+  }
+}
