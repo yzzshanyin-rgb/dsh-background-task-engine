@@ -58,6 +58,8 @@ First release. Verified against DeepSeek Harness `0.2.2-rc.3`
 
 ### Verification
 
+- Published as `dsh-background-task-engine@1.0.0` on npm; the registry copy was
+  installed into a real profile and reports `application: applied`.
 - 81 tests across domain, storage, rendering and integration suites.
 - Real-host runs against the installed DSH `0.2.2-rc.3` packages: mount, full
   manual loop, restart persistence, stale-run recovery, resume.

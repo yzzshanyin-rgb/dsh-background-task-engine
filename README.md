@@ -1,5 +1,8 @@
 # dsh-background-task-engine
 
+[![npm](https://img.shields.io/npm/v/dsh-background-task-engine)](https://www.npmjs.com/package/dsh-background-task-engine)
+[![license](https://img.shields.io/github/license/yzzshanyin-rgb/dsh-background-task-engine)](LICENSE)
+
 Durable background task engine for **DeepSeek Harness (DSH)**: reusable task
 templates, ordered linear steps, one persisted run ledger, progress and history
 queries, explicit failure/interruption recovery, and optional linkage to native
@@ -27,12 +30,17 @@ Requirements: DSH **0.2.2-rc.3** or a compatible release with
 `storage-domain backend: json`).
 
 ```sh
-# from a local checkout
-dsh plugin --profile <name> add /absolute/path/to/dsh-background-task-engine
-
-# or from npm
+# from npm (published 1.0.0)
 dsh plugin --profile <name> add dsh-background-task-engine
+
+# or from a local checkout
+dsh plugin --profile <name> add /absolute/path/to/dsh-background-task-engine
 ```
+
+When installing from a directory path, run `npm install` in that directory first:
+the plugin imports `@deepseek-ai/schemastery`, and a missing `node_modules` makes
+the loader fail with `ERR_MODULE_NOT_FOUND`. The registry spec carries its own
+dependencies and needs no checkout.
 
 Then restart the app. Confirm in **Plugins** that the row
 `background-task-engine` is enabled; the row shows this bundle's title,
