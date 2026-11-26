@@ -36,6 +36,12 @@ const errorInput = z.object({
   message: z.string().trim().min(1).max(2000),
 })
 
+/** The record schema requires a code; an agent may omit it. */
+function toStepError(value: { code?: string; message: string } | undefined): { code: string; message: string } | undefined {
+  if (value === undefined) return undefined
+  return { code: value.code === undefined || value.code === '' ? 'STEP_FAILED' : value.code, message: value.message }
+}
+
 function renderRun(args: unknown, value: unknown): ContentBlock[] {
   const record = value as Record<string, unknown>
   if (isFailure(value)) return renderGeneric(args, value)
@@ -223,11 +229,11 @@ export function createRunTools(engine: () => TaskEngine): ToolDefinitionLike[] {
           stepId: String(args.stepId),
           action: args.action as 'started' | 'completed' | 'failed' | 'skipped',
           summary: args.summary as string | undefined,
-          error: args.error as { code?: string; message: string } | undefined,
+          error: toStepError(args.error as { code?: string; message: string } | undefined),
         })
         const nextStepId = result.run.currentStepId
         return {
-          ...runView(result.run, active.runService.stepsOf(result.run.runId)),
+          ...runView(result.run, await active.runService.stepsOf(result.run.runId)),
           stepId: result.step.stepId,
           stepStatus: result.step.status,
           progress: result.run.progress,
@@ -274,17 +280,25 @@ export function createRunTools(engine: () => TaskEngine): ToolDefinitionLike[] {
         ]
         if (record.summary) lines.push(`摘要：${String(record.summary)}`)
         if (record.errorSummary) lines.push(`错误：${String(record.errorSummary)}`)
+        // Failed steps carry the only evidence of what actually went wrong, so
+        // they are always listed rather than left to the run-level summary.
+        const steps = (record.steps ?? []) as Array<Record<string, unknown>>
+        for (const step of steps) {
+          if (step.status !== 'failed' && step.status !== 'skipped') continue
+          const detail = step.errorSummary === undefined ? '' : ` — ${String(step.errorSummary)}`
+          lines.push(`${step.status === 'failed' ? '✗' : '–'} ${String(step.order ?? '')}. ${String(step.title ?? '')}${detail}`)
+        }
         return [{ type: 'text', text: lines.join('\n') }]
       },
       async execute(args, active) {
-        const updated = await active.runService.finish({
+        const finished = await active.runService.finish({
           sessionId: String(args.sessionId),
           runId: String(args.runId),
           status: args.status as 'succeeded' | 'failed' | 'blocked' | 'interrupted' | 'skipped',
           summary: args.summary as string | undefined,
-          error: args.error as { code?: string; message: string } | undefined,
+          error: toStepError(args.error as { code?: string; message: string } | undefined),
         })
-        return runView(updated, active.runService.stepsOf(updated.runId))
+        return runView(finished.run, finished.steps)
       },
     },
     engine,
@@ -353,7 +367,7 @@ export function createRunTools(engine: () => TaskEngine): ToolDefinitionLike[] {
           cursor: args.cursor as string | undefined,
         })
         return {
-          items: page.items.map((item) => ({
+          items: page.rows.map((item) => ({
             runId: item.runId,
             status: item.status,
             triggerType: item.triggerType,

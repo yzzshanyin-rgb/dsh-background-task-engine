@@ -42,11 +42,8 @@ export interface HostTiming {
     kind: string;
     [key: string]: unknown;
 }
-/**
- * Translate validated timing input into the host's documented timing shapes.
- * Only `at`, `every`, `rrule` and `cron` are passed through; daily/weekly are
- * expressed as an equivalent RRULE so the plugin depends on one less host shape.
- */
+/** Next occurrence for display, or undefined when the rule cannot be parsed. */
+export declare function describeNextRun(timing: HostTiming, now?: Date): string | undefined;
 export declare function toHostTiming(input: TimingInput): HostTiming;
 export declare function describeTiming(timing: TimingInput | HostTiming): string;
 export interface CreateScheduleResult {
@@ -82,6 +79,13 @@ export declare class ScheduleAdapter {
         alreadyGone: boolean;
     }>;
     view(scheduleId: string): Promise<ScheduleRecordLike | undefined>;
+    /**
+     * Every live schedule whose delivery prompt names this task.
+     *
+     * Reconciliation needs this after a crash between "host created the rule" and
+     * "we stored its id": the only link left is the prompt we injected.
+     */
+    findByTaskId(taskId: string): Promise<ScheduleRecordLike[]>;
     runNow(scheduleId: string): Promise<{
         pending: boolean;
         entry?: ScheduleRecordLike;

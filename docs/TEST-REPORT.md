@@ -1,6 +1,7 @@
 # Test Report
 
-Verification record for `dsh-background-task-engine` 1.0.0 against PRD chapter 14.
+Verification record for `dsh-background-task-engine` 1.2.0 against the V1.2.0
+acceptance matrix (章节 14 与 V1.2.0 §2–§7 验收项).
 
 ## How to reproduce
 
@@ -14,26 +15,50 @@ npm test               # vitest run
 
 | Suite | File | Tests | Result |
 |---|---|---|---|
-| Domain (state machine) | `tests/domain/state.test.ts` | 18 | PASS |
+| Domain (state machine) | `tests/domain/state.test.ts` | 22 | PASS |
 | Domain (configuration) | `tests/domain/config.test.ts` | 7 | PASS |
-| Storage | `tests/storage/repository.test.ts` | 17 | PASS |
+| Storage (records + migrations) | `tests/storage/repository.test.ts` | 17 | PASS |
+| Services (time zones) | `tests/services/schedule-time.test.ts` | 13 | PASS |
 | Rendering | `tests/tools/render.test.ts` | 13 | PASS |
 | Integration (tools) | `tests/integration/tools.test.ts` | 33 | PASS |
-| Integration (client bundle) | `tests/integration/client-bundle.test.ts` | 12 | PASS |
-| **Total** | 6 files | **100** | **all passing** |
+| Integration (reliability) | `tests/integration/reliability.test.ts` | 14 | PASS |
+| Integration (board routes) | `tests/integration/http-routes.test.ts` | 8 | PASS |
+| Integration (client bundle) | `tests/integration/client-bundle.test.ts` | 17 | PASS |
+| **Total** | 9 files | **144** | **all passing** |
 
 ```console
 $ npx vitest run
- ✓ tests/integration/client-bundle.test.ts (12 tests)
- ✓ tests/domain/config.test.ts (7 tests)
- ✓ tests/domain/state.test.ts (18 tests)
+ ✓ tests/domain/state.test.ts (22 tests)
+ ✓ tests/integration/client-bundle.test.ts (17 tests)
  ✓ tests/storage/repository.test.ts (17 tests)
+ ✓ tests/integration/http-routes.test.ts (8 tests)
+ ✓ tests/integration/reliability.test.ts (14 tests)
  ✓ tests/tools/render.test.ts (13 tests)
+ ✓ tests/services/schedule-time.test.ts (13 tests)
  ✓ tests/integration/tools.test.ts (33 tests)
+ ✓ tests/domain/config.test.ts (7 tests)
 
- Test Files  6 passed (6)
-      Tests  100 passed (100)
+ Test Files  9 passed (9)
+      Tests  144 passed (144)
 ```
+
+## V1.2.0 acceptance matrix
+
+| 验收项 | 覆盖位置 |
+|---|---|
+| 同一幂等键 20 并发只产生 1 个 Run | `reliability.test.ts` · 20 concurrent `manualRunId` |
+| 任务级与会话级上限、结束即释放 | `reliability.test.ts` · per-task / per-owner limits |
+| 写入失败释放占位后可重试 | `reliability.test.ts` · failed insert releases the reservation |
+| 心跳续租、伪造凭证被拒、旧凭证不能改新运行 | `reliability.test.ts` · heartbeat & credentials |
+| 运行中只标疑似失联，启动扫描才置中断 | `reliability.test.ts` · stale detection |
+| Step 写成功但 Run 汇总漂移 → 重算修复 | `reliability.test.ts` · `reconcileRun` |
+| 定时操作台账 + 对账不重复建规则 | `reliability.test.ts` · schedule ledger |
+| 旧版本数据迁移、二次迁移为空、状态不变 | `reliability.test.ts` · v1 → v2 migration |
+| 相同时间戳的稳定游标分页 | `reliability.test.ts` · 30 runs, one instant |
+| 活动数据保护与批量清理 | `reliability.test.ts` · `prune` |
+| 时区、跨日、夏令时、非法时区 | `schedule-time.test.ts` |
+| 看板数据隔离、缺会话拒绝、跨会话 404 | `http-routes.test.ts` |
+| 看板列表/详情/运行详情/空态/错误态 | `client-bundle.test.ts` · task board |
 
 The client-bundle suite loads `client/client.js` with a `window.__ModuleLoader__`
 stub and a minimal React-hooks runtime, so the shipped browser half is executed

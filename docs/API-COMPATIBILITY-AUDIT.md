@@ -10,7 +10,10 @@ Deliverable for PRD chapter 3 and 16.1. Everything below was verified against th
 | DSH distribution | Desktop app | `DSH_PROFILE=desktop`, install dir inside `app.asar` |
 | `@deepseek-ai/dsh` | **0.2.2-rc.3** | `DSH_INSTALL_DIR/package.json` |
 | `@deepseek-ai/cordis` | **~4.1.0** | dependency of the above |
-| `@deepseek-ai/schemastery` | 3.18.5 (resolved) | profile `node_modules`, `Schema` is the **default export** |
+| `@deepseek-ai/schemastery` | 3.18.5 (resolved) | profile `node_modules`, `Schema` is the **default export**; `schema.volatile()` present |
+| Node runtime | 24.13.0 (requires 22+) | `node -v`; real-host scripts run on it |
+| `@deepseek-ai/dsh-settings` | bundled with 0.2.2-rc.3 | `describe()` only serves entries whose schema has a `.volatile()` field |
+| `@deepseek-ai/dsh-host-webserver` | bundled with 0.2.2-rc.3 | routes registered via `webServer.register({kind:'exact', path, handler})` |
 | `zod` | 3.x (profile-resolved) | profile `node_modules` |
 | Profile | `~/.dsh/profiles/desktop` | `$DSH_PROFILE_DIR` |
 
@@ -201,3 +204,26 @@ resume: true running | resumesRunId = true | carried = 1 | pending = 1
    write cost grows with retained runs. Mitigated by the 90-day retention prune.
 3. **`domain/changed` is in-process only**; a second host process sees writes
    after reopening the domain, not live.
+
+## 10. V1.2.0 re-verification (1.2.0)
+
+Only additive surface was used; nothing from the 1.0.0 audit changed its meaning.
+
+| Interface | Used by 1.2.0 | Evidence |
+|---|---|---|
+| `ctx.storageDomain.open(spec)` with new tables | `idempotency`, `active_runs`, `run_index`, `schedule_ops` | `tests/storage/repository.test.ts` (8 tables), real-host JSON file grows to 8 units |
+| `ctx.storageDomain` reopen + migrations on restart | `MIGRATIONS` ledger in `meta` | `tests/integration/reliability.test.ts` v1→v2 migration case; `docs/TEST-REPORT.md` |
+| `ctx.schedule.create/edit/view/list` | schedule ledger + reconcile | `tests/integration/tools.test.ts` schedule cases |
+| `ctx.webServer.register({kind:'exact', path, handler})` | `/dsh-background-task/api/*` | `tests/integration/http-routes.test.ts` (fake webServer, 5 routes) |
+| `ctx.tools.register` | 14 tools | real-host script: "tools visible to model: 14" |
+| `ctx.slots.register('conversation.composer.dock', …)` | task board entry | `tests/integration/client-bundle.test.ts` registers slot with id `background-task-board` |
+| `configForms` + `volatile` config | config card unchanged | `tests/domain/config.test.ts`, client card tests |
+| `Intl.DateTimeFormat` with IANA zones | `schedule-time.ts` | `tests/services/schedule-time.test.ts` (13 cases incl. DST) |
+
+Two host behaviours worth recording, both discovered while building 1.2.0:
+
+- `StorageDomain` validates unit names with `/^[a-z][a-z0-9_]*$/`, so the domain is
+  `dsh_background_task_engine` (unchanged) and every new table name is snake_case.
+- `slots.register` only passes what the slot renders: `conversation.composer.dock` renders
+  with `{}`, so the board cannot read the session from props and must resolve it from the
+  page (`__DSH_BOOT__`, URL, or a one-time prompt). It never guesses.

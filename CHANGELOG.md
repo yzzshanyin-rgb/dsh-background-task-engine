@@ -4,6 +4,58 @@ All notable changes to `dsh-background-task-engine` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-11-26
+
+可靠性加固与任务管理界面。此版本不改变既有工具的参数语义，也不重建数据模型，
+只增加必要字段与索引；1.1.x 的数据在首次启动时自动迁移。
+
+### Added
+
+- **`task_run_heartbeat`**：上报心跳并续租；可带 `executionToken`，旧凭证不能修改已恢复的运行。
+- **`task_engine_status`**：存储/定时可用性、活动/待处理/中断运行数、完整性状态、最近恢复扫描与
+  对账时间、未完成定时操作数，以及最近 5 次运行的健康度。
+- **任务看板**（浏览器半）：输入框下方的「📋 任务」入口，含任务列表（筛选/搜索/排序）、任务详情
+  （步骤、定时状态与下次执行时间、定时操作台账、最近运行）与运行详情（步骤时间线、失败原因、
+  心跳与租约、是否需要人工确认），并可暂停/恢复/归档/恢复运行。
+- 宿主路由 `/dsh-background-task/api/{status,tasks,task,run,action}`：按会话过滤，不提供会话枚举，
+  写操作复用服务层的权限与状态校验。
+- 幂等占位表、活动运行索引表、按任务索引表、定时操作台账表；历史分页改用键集游标。
+- `executionToken` / `executionGeneration`：运行执行凭证与代际。
+- 步骤级 `retryPolicy`（`safe_retry` / `verify_before_retry` / `manual_only`）与 `failureCategory`。
+
+### Fixed
+
+- **时区日期偏移**：`daily`/`weekly` 改用目标时区的本地日期生成 `DTSTART`，不再用 UTC 日期拼墙上时间；
+  跨日与夏令时都按 IANA 规则折算，非法时区名返回明确错误（旧实现在上海时间 23:30 之后会错一天）。
+- **幂等竞态**：查询、并发额度校验、占位与写入现在位于同一个按键串行的临界区，20 个并发请求只产生 1 次运行。
+- **并发额度**：改为按持久化索引计数，重启后按状态重建，结束即释放，清理与恢复不会误释放仍在执行的运行。
+- **步骤状态**：转移校验移入存储写入的 mutator 内，并发上报不再依赖锁外快照，非法转移不会覆盖已完成步骤。
+- **运行汇总漂移**：`progress`/`currentStepId` 由步骤状态重算，写入失败后可由 `reconcileRun` 修复。
+- **失联判定**：超时与失联分开；运行中只标记「疑似失联」，仅启动扫描确认后置为 `interrupted`，
+  且一定会标记 `needsUserConfirmation`——失联不代表可以重跑可能已产生副作用的步骤。
+- **`blocked` 语义**：不再写入 `finishedAt`，因为它不是终态；恢复时旧凭证失效、代际递增。
+- **失败证据**：`task_run_finish(status:"failed")` 未带 `error` 时会从失败步骤派生摘要与类别，
+  不会只留下一个没有原因的 `failed`。
+- **定时操作台账**：创建/修改/暂停/恢复/删除先记 `pending`，成功记 `succeeded`，失败记 `failed`
+  并保留脱敏后的 `lastError`；启动时对账，只在能唯一确认时自动修复，有歧义保留 `reconciling`。
+- **完整性诊断**：8 类问题（孤立步骤、缺失任务、快照缺步骤、索引漂移、并发占位漂移、幂等漂移、
+  进度漂移、过期占位），并区分可自动修复与需人工介入。
+- **历史分页**：`task_run_history` 默认 20、上限 50，基于 `taskId/startedAt/runId` 的键集游标，
+  同一时间戳的多条运行翻页不重复、不遗漏。
+- **清理**：分批（每批 200）清理过期终态运行，保护活动运行，记录处理数量与时间，失败不影响执行。
+
+### Changed
+
+- `task_run_finish` 的 `failed` 可省略 `error`（会从失败步骤派生）；`blocked` 仍是可恢复状态。
+- 归档任务不再允许恢复运行（`TASK_PERMISSION_DENIED`），与启动运行的规则一致。
+- 并发超限的错误会带上 `relatedRunId`，Agent 可以直接知道在等哪一次运行。
+- 历史行新增 `resumesRunId`、`needsUserConfirmation` 与步骤摘要。
+
+### Migration
+
+- `v2-run-liveness-defaults` / `v2-build-indexes` / `v2-step-retry-policy`，均幂等，
+  以 `meta.appliedMigrations` 为台账；旧运行不会被改成中断或失败。
+
 ## [1.1.1] — 2026-11-26
 
 配置卡片的命名空间发现改为按事实判断，而不是假设行 id。

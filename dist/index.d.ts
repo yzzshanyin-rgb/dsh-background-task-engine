@@ -1,7 +1,7 @@
 /**
  * dsh-background-task-engine — DSH Host plugin entry.
  *
- * Registers 12 model-facing `task_*` tools over DSH native capabilities:
+ * Registers 14 model-facing `task_*` tools over DSH native capabilities:
  *   - `ctx.storageDomain` for durable task/run/step records (required)
  *   - `ctx.schedule` for optional native timing (never reimplemented)
  *   - `ctx.tools` for the tool surface
@@ -24,6 +24,7 @@ export type { EngineConfig } from './config.js';
 export { SCHEMA_VERSION, DOMAIN_NAME, RUN_STATUSES, STEP_STATUSES, TASK_STATUSES, TRIGGER_TYPES, } from './domain/records.js';
 export { createDomainSpec, runMigrations, verifyIntegrity, MIGRATIONS } from './storage/spec.js';
 export { parseTriggerMessage, EXECUTION_PROTOCOL } from './prompt/guidance.js';
+export { ROUTE_PREFIX } from './services/http-routes.js';
 /**
  * Mount the plugin.
  *

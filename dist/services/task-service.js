@@ -24,12 +24,14 @@ export class TaskService {
     config;
     audit;
     schedules;
+    ledger;
     now;
-    constructor(repo, config, audit, schedules, now = nowIso) {
+    constructor(repo, config, audit, schedules, ledger, now = nowIso) {
         this.repo = repo;
         this.config = config;
         this.audit = audit;
         this.schedules = schedules;
+        this.ledger = ledger;
         this.now = now;
     }
     // ---------------------------------------------------------------- create
@@ -322,12 +324,12 @@ export class TaskService {
         if (task.scheduleRef) {
             throw new TaskEngineError('TASK_SCHEDULE_FAILED', `任务已有定时规则 ${task.scheduleRef.scheduleId}；请使用 action="update" 修改或 action="delete" 后重建`);
         }
-        const created = await this.schedules.create({
+        const { result: created } = await this.ledger.run({ action: 'create', task, sessionId: input.sessionId, timing: input.timing }, async () => this.schedules.create({
             taskId: task.taskId,
             taskTitle: task.title,
             timing: input.timing,
             sessionId: input.sessionId,
-        });
+        }));
         const stamp = this.now();
         const ref = {
             scheduleId: created.scheduleId,
@@ -363,7 +365,17 @@ export class TaskService {
         if (task.status === 'archived')
             throw new TaskEngineError('TASK_PERMISSION_DENIED', '任务已归档，不能修改定时规则');
         try {
-            await this.schedules.update({ scheduleId: ref.scheduleId, patch: { timing: input.timing }, sessionId: input.sessionId });
+            await this.ledger.run({
+                action: 'update',
+                task,
+                sessionId: input.sessionId,
+                scheduleId: ref.scheduleId,
+                timing: input.timing,
+            }, async () => this.schedules.update({
+                scheduleId: ref.scheduleId,
+                patch: { timing: input.timing },
+                sessionId: input.sessionId,
+            }));
         }
         catch (error) {
             // Persist the failure for diagnostics but keep the old rule untouched and
@@ -372,7 +384,7 @@ export class TaskService {
             await this.patchScheduleRef(task.taskId, (current) => ({
                 ...current,
                 updatedAt: this.now(),
-                lastError: { code: 'TASK_SCHEDULE_FAILED', message: message.slice(0, 500) },
+                lastError: message.slice(0, 500),
             }));
             throw error;
         }
@@ -405,7 +417,11 @@ export class TaskService {
         const targetState = input.active ? 'active' : 'paused';
         if (ref.state === targetState)
             return { task, changed: false };
-        await this.schedules.update({ scheduleId: ref.scheduleId, patch: { active: input.active }, sessionId: input.sessionId });
+        await this.ledger.run({ action: input.active ? 'resume' : 'pause', task, sessionId: input.sessionId, scheduleId: ref.scheduleId }, async () => this.schedules.update({
+            scheduleId: ref.scheduleId,
+            patch: { active: input.active },
+            sessionId: input.sessionId,
+        }));
         const updated = await this.repo.mutateTask(task.taskId, undefined, (current) => ({
             ...current,
             scheduleRef: current.scheduleRef
@@ -430,7 +446,7 @@ export class TaskService {
         const ref = task.scheduleRef;
         if (!ref)
             throw new TaskEngineError('TASK_SCHEDULE_FAILED', '任务没有关联的定时规则');
-        const removed = await this.schedules.remove(ref.scheduleId, input.sessionId);
+        const { result: removed } = await this.ledger.run({ action: 'delete', task, sessionId: input.sessionId, scheduleId: ref.scheduleId }, async () => this.schedules.remove(ref.scheduleId, input.sessionId));
         const updated = await this.repo.mutateTask(task.taskId, undefined, (current) => {
             const next = { ...current, revision: current.revision + 1, updatedAt: this.now() };
             delete next.scheduleRef;
@@ -446,6 +462,20 @@ export class TaskService {
             detail: `scheduleId=${ref.scheduleId}`,
         });
         return { task: updated, alreadyGone: removed.alreadyGone };
+    }
+    /**
+     * Journal rows for one task, newest last.
+     *
+     * A row that never left pending/processing/reconciling is exactly the
+     * evidence the PRD asks us to keep when the host and local record disagree.
+     */
+    scheduleOperations(sessionId, taskId) {
+        const task = this.repo.requireOwnedTask(taskId, sessionId);
+        return this.repo.listScheduleOps(task.taskId);
+    }
+    /** Settle journals left behind by a previous boot; safe to call repeatedly. */
+    async reconcileSchedules() {
+        return this.ledger.reconcile();
     }
     async scheduleStatus(input) {
         const task = this.repo.requireOwnedTask(input.taskId, input.sessionId);

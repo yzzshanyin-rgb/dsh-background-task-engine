@@ -1,7 +1,7 @@
 /**
  * dsh-background-task-engine — DSH Host plugin entry.
  *
- * Registers 12 model-facing `task_*` tools over DSH native capabilities:
+ * Registers 14 model-facing `task_*` tools over DSH native capabilities:
  *   - `ctx.storageDomain` for durable task/run/step records (required)
  *   - `ctx.schedule` for optional native timing (never reimplemented)
  *   - `ctx.tools` for the tool surface
@@ -18,6 +18,8 @@ import { TaskEngine } from './services/engine.js'
 import { createTaskTools } from './tools/task-tools.js'
 import { createRunTools } from './tools/run-tools.js'
 import { createScheduleTool } from './tools/schedule-tool.js'
+import { createEngineTools } from './tools/engine-tools.js'
+import { registerUiRoutes } from './services/http-routes.js'
 
 export const name = 'dsh-background-task-engine'
 
@@ -39,6 +41,7 @@ export {
 } from './domain/records.js'
 export { createDomainSpec, runMigrations, verifyIntegrity, MIGRATIONS } from './storage/spec.js'
 export { parseTriggerMessage, EXECUTION_PROTOCOL } from './prompt/guidance.js'
+export { ROUTE_PREFIX } from './services/http-routes.js'
 
 /** Engine holders keyed by the plugin context that created them. */
 const engines = new WeakMap<object, TaskEngine>()
@@ -76,6 +79,9 @@ export function apply(ctx: HostContextLike, rawConfig?: unknown): void {
   })
 
   registerTools(tools, () => engine)
+  // The task board reads through the plugin's own HTTP routes (1.2.0 §6); when
+  // the host has no webServer the board is simply absent, tools unaffected.
+  registerUiRoutes(ctx, () => engine)
 
   ctx.effect?.(() => () => {
     void engine.dispose()
@@ -83,7 +89,12 @@ export function apply(ctx: HostContextLike, rawConfig?: unknown): void {
 }
 
 function registerTools(tools: ToolsServiceLike, engine: () => TaskEngine): void {
-  const definitions = [...createTaskTools(engine), ...createRunTools(engine), createScheduleTool(engine)]
+  const definitions = [
+    ...createTaskTools(engine),
+    ...createRunTools(engine),
+    createScheduleTool(engine),
+    ...createEngineTools(engine),
+  ]
   for (const definition of definitions) {
     try {
       tools.register(definition)

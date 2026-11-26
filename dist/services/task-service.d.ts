@@ -11,6 +11,8 @@ import { type RunRecord, type ScheduleRef, type TaskRecord, type TaskStatus } fr
 import type { Repository } from '../storage/repository.js';
 import type { AuditTrail } from './audit.js';
 import { type ScheduleAdapter, type TimingInput } from './schedule-adapter.js';
+import type { ScheduleLedger } from './schedule-ledger.js';
+import type { ScheduleOpRecord } from '../domain/records.js';
 declare const stepInputSchema: z.ZodObject<{
     title: z.ZodString;
     instruction: z.ZodString;
@@ -74,8 +76,9 @@ export declare class TaskService {
     private readonly config;
     private readonly audit;
     private readonly schedules;
+    private readonly ledger;
     private readonly now;
-    constructor(repo: Repository, config: EngineConfig, audit: AuditTrail, schedules: ScheduleAdapter, now?: () => string);
+    constructor(repo: Repository, config: EngineConfig, audit: AuditTrail, schedules: ScheduleAdapter, ledger: ScheduleLedger, now?: () => string);
     create(input: CreateTaskInput): Promise<TaskRecord>;
     private normaliseSteps;
     list(input: ListTasksInput): {
@@ -123,6 +126,22 @@ export declare class TaskService {
     }): Promise<{
         task: TaskRecord;
         alreadyGone: boolean;
+    }>;
+    /**
+     * Journal rows for one task, newest last.
+     *
+     * A row that never left pending/processing/reconciling is exactly the
+     * evidence the PRD asks us to keep when the host and local record disagree.
+     */
+    scheduleOperations(sessionId: string, taskId: string): ScheduleOpRecord[];
+    /** Settle journals left behind by a previous boot; safe to call repeatedly. */
+    reconcileSchedules(): Promise<{
+        checked: number;
+        settled: number;
+        ambiguous: number;
+        failed: number;
+        checkedAt: string;
+        notes: string[];
     }>;
     scheduleStatus(input: {
         sessionId: string;

@@ -89,3 +89,11 @@ export function compareDesc(aTs: string, aId: string, bTs: string, bId: string):
   if (aId === bId) return 0
   return aId < bId ? 1 : -1
 }
+
+/** Normalise a caller-supplied limit against an endpoint-specific ceiling. */
+export function clampLimit(limit: number | undefined, fallback: number, max: number): number {
+  if (limit === undefined || !Number.isFinite(limit)) return fallback;
+  const value = Math.floor(limit);
+  if (value < 1) return 1;
+  return value > max ? max : value;
+}

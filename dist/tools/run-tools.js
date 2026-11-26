@@ -22,6 +22,12 @@ const errorInput = z.object({
     code: z.string().trim().max(64).optional(),
     message: z.string().trim().min(1).max(2000),
 });
+/** The record schema requires a code; an agent may omit it. */
+function toStepError(value) {
+    if (value === undefined)
+        return undefined;
+    return { code: value.code === undefined || value.code === '' ? 'STEP_FAILED' : value.code, message: value.message };
+}
 function renderRun(args, value) {
     const record = value;
     if (isFailure(value))
@@ -199,11 +205,11 @@ export function createRunTools(engine) {
                 stepId: String(args.stepId),
                 action: args.action,
                 summary: args.summary,
-                error: args.error,
+                error: toStepError(args.error),
             });
             const nextStepId = result.run.currentStepId;
             return {
-                ...runView(result.run, active.runService.stepsOf(result.run.runId)),
+                ...runView(result.run, await active.runService.stepsOf(result.run.runId)),
                 stepId: result.step.stepId,
                 stepStatus: result.step.status,
                 progress: result.run.progress,
@@ -247,17 +253,26 @@ export function createRunTools(engine) {
                 lines.push(`摘要：${String(record.summary)}`);
             if (record.errorSummary)
                 lines.push(`错误：${String(record.errorSummary)}`);
+            // Failed steps carry the only evidence of what actually went wrong, so
+            // they are always listed rather than left to the run-level summary.
+            const steps = (record.steps ?? []);
+            for (const step of steps) {
+                if (step.status !== 'failed' && step.status !== 'skipped')
+                    continue;
+                const detail = step.errorSummary === undefined ? '' : ` — ${String(step.errorSummary)}`;
+                lines.push(`${step.status === 'failed' ? '✗' : '–'} ${String(step.order ?? '')}. ${String(step.title ?? '')}${detail}`);
+            }
             return [{ type: 'text', text: lines.join('\n') }];
         },
         async execute(args, active) {
-            const updated = await active.runService.finish({
+            const finished = await active.runService.finish({
                 sessionId: String(args.sessionId),
                 runId: String(args.runId),
                 status: args.status,
                 summary: args.summary,
-                error: args.error,
+                error: toStepError(args.error),
             });
-            return runView(updated, active.runService.stepsOf(updated.runId));
+            return runView(finished.run, finished.steps);
         },
     }, engine);
     const history = buildTool({
@@ -321,7 +336,7 @@ export function createRunTools(engine) {
                 cursor: args.cursor,
             });
             return {
-                items: page.items.map((item) => ({
+                items: page.rows.map((item) => ({
                     runId: item.runId,
                     status: item.status,
                     triggerType: item.triggerType,

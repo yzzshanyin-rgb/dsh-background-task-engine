@@ -1,7 +1,7 @@
 {
   "name": "dsh-background-task-engine",
-  "version": "1.1.1",
-  "description": "DSH 后台任务引擎：可复用任务模板、线性步骤、持久化运行账本、进度与历史查询、失败/中断恢复、可视化配置页，可选关联 DSH 原生定时任务。",
+  "version": "1.2.0",
+  "description": "DeepSeek Harness 后台任务引擎：任务模板、线性步骤执行、持久化运行记录、心跳与恢复、定时关联与任务看板。",
   "keywords": [
     "deepseek-harness",
     "dsh",

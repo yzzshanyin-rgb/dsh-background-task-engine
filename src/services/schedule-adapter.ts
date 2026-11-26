@@ -18,6 +18,14 @@ import { TaskEngineError, sanitizeMessage } from '../errors.js'
 import { buildSchedulePrompt } from '../prompt/guidance.js'
 import { isOlderThanMinutes } from '../utils/time.js'
 
+import {
+  DEFAULT_TIME_ZONE,
+  buildWallClockRrule,
+  describeNextOccurrence,
+  isValidTimeZone,
+  requireTimeZone,
+} from './schedule-time.js'
+
 export type TimingInput =
   | { kind: 'at'; at: string }
   | { kind: 'every'; everySeconds: number }
@@ -26,7 +34,6 @@ export type TimingInput =
   | { kind: 'daily'; hour: number; minute: number; timeZone?: string }
   | { kind: 'weekly'; dayOfWeek: number; hour: number; minute: number; timeZone?: string }
 
-const DEFAULT_TIME_ZONE = 'Asia/Shanghai'
 const DAY_CODES = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'] as const
 
 export interface HostTiming {
@@ -45,18 +52,49 @@ function assertIntegerInRange(value: unknown, min: number, max: number, field: s
   return value
 }
 
-function buildRruleFromWallClock(timeZone: string, hour: number, minute: number, weeklyDay?: number): string {
-  const now = new Date()
-  const stamp = `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}T${pad(hour)}${pad(minute)}00`
-  const rule = weeklyDay === undefined ? 'FREQ=DAILY' : `FREQ=WEEKLY;BYDAY=${DAY_CODES[weeklyDay]}`
-  return `DTSTART;TZID=${timeZone}:${stamp}\nRRULE:${rule}`
-}
 
 /**
  * Translate validated timing input into the host's documented timing shapes.
  * Only `at`, `every`, `rrule` and `cron` are passed through; daily/weekly are
  * expressed as an equivalent RRULE so the plugin depends on one less host shape.
  */
+/**
+ * The zone-aware builder rejects an unknown IANA name; the failure is a user
+ * input problem, so it surfaces as the documented arguments error rather than
+ * an internal one.
+ */
+function wallClockRuleOrThrow(
+  timeZone: string | undefined,
+  hour: number,
+  minute: number,
+  weeklyDay?: number,
+): { rrule: string; firstOccurrence: string } {
+  try {
+    return buildWallClockRrule(timeZone ?? DEFAULT_TIME_ZONE, hour, minute, weeklyDay)
+  } catch (error) {
+    throw new TaskEngineError('TASK_INVALID_ARGUMENTS', error instanceof Error ? error.message : String(error))
+  }
+}
+
+/** Next occurrence for display, or undefined when the rule cannot be parsed. */
+export function describeNextRun(timing: HostTiming, now: Date = new Date()): string | undefined {
+  const value = timing as Record<string, unknown>
+  if (value.kind === 'at') {
+    const at = String(value.at ?? '')
+    return Number.isFinite(Date.parse(at)) ? at : undefined
+  }
+  if (value.kind === 'rrule') {
+    const rule = String(value.rrule ?? '')
+    const zone = /TZID=([^:\n]+)/.exec(rule)?.[1] ?? DEFAULT_TIME_ZONE
+    return describeNextOccurrence(zone, rule, now)
+  }
+  if (value.kind === 'cron') {
+    const cron = value.cron as Record<string, unknown> | undefined
+    return cron?.time_zone === undefined ? undefined : `时区 ${String(cron.time_zone)}`
+  }
+  return undefined
+}
+
 export function toHostTiming(input: TimingInput): HostTiming {
   switch (input.kind) {
     case 'at': {
@@ -88,21 +126,21 @@ export function toHostTiming(input: TimingInput): HostTiming {
       if (expression.split(/\s+/).length !== 5) {
         throw new TaskEngineError('TASK_INVALID_ARGUMENTS', 'cron 表达式必须是 5 段（分 时 日 月 周）')
       }
-      const timeZone = input.timeZone ?? DEFAULT_TIME_ZONE
+      const timeZone = requireTimeZone(input.timeZone)
       return { kind: 'cron', cron: { expression, time_zone: timeZone } }
     }
     case 'daily': {
       const hour = assertIntegerInRange(input.hour, 0, 23, 'hour')
       const minute = assertIntegerInRange(input.minute, 0, 59, 'minute')
-      const timeZone = input.timeZone ?? DEFAULT_TIME_ZONE
-      return { kind: 'rrule', rrule: buildRruleFromWallClock(timeZone, hour, minute) }
+      const { rrule } = wallClockRuleOrThrow(input.timeZone, hour, minute)
+      return { kind: 'rrule', rrule }
     }
     case 'weekly': {
       const dayOfWeek = assertIntegerInRange(input.dayOfWeek, 0, 6, 'dayOfWeek')
       const hour = assertIntegerInRange(input.hour, 0, 23, 'hour')
       const minute = assertIntegerInRange(input.minute, 0, 59, 'minute')
-      const timeZone = input.timeZone ?? DEFAULT_TIME_ZONE
-      return { kind: 'rrule', rrule: buildRruleFromWallClock(timeZone, hour, minute, dayOfWeek) }
+      const { rrule } = wallClockRuleOrThrow(input.timeZone, hour, minute, dayOfWeek)
+      return { kind: 'rrule', rrule }
     }
     default:
       throw new TaskEngineError('TASK_INVALID_ARGUMENTS', '不支持的 timing.kind')
@@ -118,10 +156,14 @@ export function describeTiming(timing: TimingInput | HostTiming): string {
       return `间隔 · 每 ${String(value.everySeconds ?? value.every_seconds ?? '?')} 秒`
     case 'rrule':
       return `重复规则 · ${String(value.rrule ?? '').replace(/\n/g, ' ')}`
-    case 'cron':
-      return `Cron · ${String((value.cron as Record<string, unknown> | undefined)?.expression ?? value.expression ?? '')}`
+    case 'cron': {
+      const cron = value.cron as Record<string, unknown> | undefined
+      const zone = String(cron?.time_zone ?? '')
+      const expression = String(cron?.expression ?? value.expression ?? '')
+      return `Cron · ${expression}${zone === '' ? '' : `（${zone}）`}`
+    }
     case 'daily':
-      return `每天 · ${pad(Number(value.hour ?? 0))}:${pad(Number(value.minute ?? 0))} (${String(value.timeZone ?? DEFAULT_TIME_ZONE)})`
+      return `每天 · ${pad(Number(value.hour ?? 0))}:${pad(Number(value.minute ?? 0))}（${String(value.timeZone ?? DEFAULT_TIME_ZONE)}）`
     case 'weekly':
       return `每周 ${DAY_CODES[Number(value.dayOfWeek ?? 0)] ?? '?'} · ${pad(Number(value.hour ?? 0))}:${pad(Number(value.minute ?? 0))}`
     default:
@@ -231,6 +273,24 @@ export class ScheduleAdapter {
       | { id: string; code: string }
     if ((result as { code?: string }).code === 'schedule_not_found') return undefined
     return result as ScheduleRecordLike
+  }
+
+  /**
+   * Every live schedule whose delivery prompt names this task.
+   *
+   * Reconciliation needs this after a crash between "host created the rule" and
+   * "we stored its id": the only link left is the prompt we injected.
+   */
+  async findByTaskId(taskId: string): Promise<ScheduleRecordLike[]> {
+    if (!this.available) return []
+    const schedule = this.require()
+    try {
+      const result = await schedule.list({ limit: 500 })
+      const items = Array.isArray(result?.items) ? result.items : []
+      return items.filter((item) => typeof item.prompt === 'string' && item.prompt.includes(taskId))
+    } catch (error) {
+      throw this.wrap('读取定时规则列表', error)
+    }
   }
 
   async runNow(scheduleId: string): Promise<{ pending: boolean; entry?: ScheduleRecordLike }> {

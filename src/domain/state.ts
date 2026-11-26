@@ -1,67 +1,58 @@
 /**
- * Task/Run/Step state machines (PRD 4.7, 7.3).
+ * Status machines and the derived health of a run.
  *
- * Every transition goes through `assertRunTransition` / `assertStepTransition`
- * so an illegal change (e.g. failed -> running, or re-finishing a finished run)
- * is rejected no matter which tool triggered it.
+ * Nothing here touches storage: these are pure predicates so the same rules can
+ * be applied inside a `table.update` mutator (where the read and the write are
+ * one atomic step) and in plain validation before a write.
  */
 
-import { TaskEngineError } from '../errors.js'
-import type { RunStatus, StepStatus, TaskStatus } from './records.js'
-import { RUN_STATUSES, STEP_STATUSES, TASK_STATUSES } from './records.js'
+import type { RunStatus, StepStatus, TaskStatus } from './records.js';
+import type { RunStepRecord } from './records.js';
 
-/** Runs that still occupy a concurrency slot. */
-export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = ['queued', 'running']
-
-/** Runs that can no longer receive progress reports. */
-export const TERMINAL_RUN_STATUSES: readonly RunStatus[] = [
-  'succeeded',
-  'failed',
-  'interrupted',
-  'skipped',
-]
-
-/** Runs a resume may start from. `blocked` is recoverable, not finished. */
-export const RESUMABLE_RUN_STATUSES: readonly RunStatus[] = ['failed', 'interrupted', 'blocked']
+export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = ['queued', 'running'];
+export const TERMINAL_RUN_STATUSES: readonly RunStatus[] = ['succeeded', 'failed', 'interrupted', 'skipped'];
+export const RESUMABLE_RUN_STATUSES: readonly RunStatus[] = ['failed', 'interrupted', 'blocked'];
+/** Statuses that hold a concurrency slot. */
+export const OCCUPYING_RUN_STATUSES: readonly RunStatus[] = ['queued', 'running', 'blocked'];
 
 export function isRunStatus(value: unknown): value is RunStatus {
-  return typeof value === 'string' && (RUN_STATUSES as readonly string[]).includes(value)
+  return value === 'queued' || value === 'running' || value === 'blocked'
+    || value === 'succeeded' || value === 'failed' || value === 'interrupted' || value === 'skipped';
 }
 
 export function isStepStatus(value: unknown): value is StepStatus {
-  return typeof value === 'string' && (STEP_STATUSES as readonly string[]).includes(value)
+  return value === 'pending' || value === 'running' || value === 'completed'
+    || value === 'failed' || value === 'skipped';
 }
 
 export function isTaskStatus(value: unknown): value is TaskStatus {
-  return typeof value === 'string' && (TASK_STATUSES as readonly string[]).includes(value)
+  return value === 'active' || value === 'paused' || value === 'archived';
 }
 
 export function isTerminalRun(status: RunStatus): boolean {
-  return TERMINAL_RUN_STATUSES.includes(status)
+  return TERMINAL_RUN_STATUSES.includes(status);
 }
 
 export function isActiveRun(status: RunStatus): boolean {
-  return ACTIVE_RUN_STATUSES.includes(status)
+  return ACTIVE_RUN_STATUSES.includes(status);
 }
 
-/**
- * Allowed TaskRun transitions.
- *
- * - queued  -> running | interrupted | skipped
- * - running -> succeeded | failed | blocked | interrupted
- * - blocked -> failed | interrupted   (never back to running: PRD 4.7 forbids
- *   it, a resume must create a new TaskRun with resumesRunId)
- * - terminal states are final.
- */
+/** A run that still occupies a concurrency slot. */
+export function occupiesSlot(status: RunStatus): boolean {
+  return OCCUPYING_RUN_STATUSES.includes(status);
+}
+
 const RUN_TRANSITIONS: Record<RunStatus, readonly RunStatus[]> = {
   queued: ['running', 'interrupted', 'skipped', 'failed'],
   running: ['succeeded', 'failed', 'blocked', 'interrupted'],
+  // A blocked run may still settle either way once the agent or the user
+  // answers the question that blocked it; it may never silently resume.
   blocked: ['failed', 'interrupted'],
   succeeded: [],
   failed: [],
   interrupted: [],
   skipped: [],
-}
+};
 
 const STEP_TRANSITIONS: Record<StepStatus, readonly StepStatus[]> = {
   pending: ['running', 'skipped', 'failed'],
@@ -69,102 +60,175 @@ const STEP_TRANSITIONS: Record<StepStatus, readonly StepStatus[]> = {
   completed: [],
   failed: [],
   skipped: [],
+};
+
+export type TransitionProblem =
+  | { kind: 'already-finished' }
+  | { kind: 'same-status' }
+  | { kind: 'illegal'; from: RunStatus | StepStatus; to: RunStatus | StepStatus };
+
+export function runTransitionProblem(from: RunStatus, to: RunStatus): TransitionProblem | undefined {
+  if (isTerminalRun(from)) return { kind: 'already-finished' };
+  if (from === to) return { kind: 'same-status' };
+  if (!RUN_TRANSITIONS[from].includes(to)) return { kind: 'illegal', from, to };
+  return undefined;
 }
 
-export function canTransitionRun(from: RunStatus, to: RunStatus): boolean {
-  if (from === to) return false
-  return RUN_TRANSITIONS[from].includes(to)
+export function stepTransitionProblem(from: StepStatus, to: StepStatus): TransitionProblem | undefined {
+  if (from === to) return { kind: 'same-status' };
+  if (!STEP_TRANSITIONS[from].includes(to)) return { kind: 'illegal', from, to };
+  return undefined;
 }
 
-export function assertRunTransition(from: RunStatus, to: RunStatus, context: string): void {
-  // Terminal wins over every other rule: a finished run can never move again,
-  // not even to the state it already holds.
-  if (isTerminalRun(from)) {
-    throw new TaskEngineError(
-      'TASK_RUN_ALREADY_FINISHED',
-      `运行已结束（${from}），不能再变更为 ${to}；如需继续请使用 task_resume 创建新的运行`,
-    )
-  }
-  if (from === to) {
-    throw new TaskEngineError('TASK_ALREADY_RUNNING', `运行已处于 ${from} 状态（${context}）`)
-  }
-  if (!canTransitionRun(from, to)) {
-    throw new TaskEngineError(
-      'TASK_STEP_ORDER_INVALID',
-      `非法状态转换 ${from} → ${to}（${context}）`,
-    )
-  }
+// ---------------------------------------------------------------------------
+// Step ordering
+// ---------------------------------------------------------------------------
+
+export function orderedSteps(steps: RunStepRecord[]): RunStepRecord[] {
+  return [...steps].sort((a, b) => a.order - b.order);
 }
 
-export function assertStepTransition(from: StepStatus, to: StepStatus, stepId: string): void {
-  if (from === to) {
-    throw new TaskEngineError(
-      'TASK_STEP_ORDER_INVALID',
-      `步骤 ${stepId} 已处于 ${from} 状态，不能重复报告 ${to}`,
-    )
-  }
-  if (!STEP_TRANSITIONS[from].includes(to)) {
-    throw new TaskEngineError(
-      'TASK_STEP_ORDER_INVALID',
-      `步骤 ${stepId} 不能从 ${from} 变更为 ${to}`,
-    )
-  }
+/** The first step that is not settled, i.e. where execution continues. */
+export function firstPendingStep(steps: RunStepRecord[]): RunStepRecord | undefined {
+  return orderedSteps(steps).find((step) => step.status === 'pending' || step.status === 'running');
 }
 
 /**
- * Progress is derived from persisted step records only (PRD 11.4), counting
- * required steps that are completed. Skipped/failed required steps never
- * contribute, so a run cannot look "nearly done" while blocking.
+ * Problems that prevent `stepId` from being started now.
+ *
+ * A step may start only when every earlier step is settled (completed or
+ * skipped). The check reads the step rows themselves rather than a cached
+ * cursor, so a stale cache cannot reorder work.
  */
-export function computeProgress(
-  steps: ReadonlyArray<{ required: boolean; status: StepStatus }>,
-): { progress: number; requiredTotal: number; requiredCompleted: number } {
-  const required = steps.filter((step) => step.required)
-  const completed = required.filter((step) => step.status === 'completed').length
-  const total = required.length
-  const progress = total === 0 ? 0 : Math.min(100, Math.floor((completed / total) * 100))
-  return { progress, requiredTotal: total, requiredCompleted: completed }
+export function startBlockers(steps: RunStepRecord[], stepId: string): RunStepRecord[] {
+  const target = steps.find((step) => step.stepId === stepId);
+  if (target === undefined) return [];
+  return orderedSteps(steps).filter((step) => step.order < target.order
+    && step.status !== 'completed' && step.status !== 'skipped');
 }
 
-/** First step, in order, that still needs work. */
-export function firstPendingStep(
-  steps: ReadonlyArray<{ stepId: string; order: number; status: StepStatus }>,
-): string | undefined {
-  const sorted = [...steps].sort((a, b) => a.order - b.order)
-  return sorted.find((step) => step.status === 'pending' || step.status === 'running')?.stepId
+/** `{done, total}` over required steps; failed and skipped never count as done. */
+export function requiredProgress(steps: RunStepRecord[]): { done: number; total: number; percent: number } {
+  const required = steps.filter((step) => step.required);
+  const done = required.filter((step) => step.status === 'completed').length;
+  const total = required.length;
+  const percent = total === 0 ? 100 : Math.floor((done / total) * 100);
+  return { done, total, percent };
 }
 
-/** All required steps completed => the run may be reported as succeeded. */
-export function requiredStepsSettled(
-  steps: ReadonlyArray<{ required: boolean; status: StepStatus; stepId: string; order: number }>,
-): { ok: boolean; blockers: string[] } {
-  const blockers = steps
-    .filter((step) => step.required && step.status !== 'completed')
-    .sort((a, b) => a.order - b.order)
-    .map((step) => `${step.order}. ${step.stepId} (${step.status})`)
-  return { ok: blockers.length === 0, blockers }
+/** Required steps that still prevent a run from being reported as succeeded. */
+export function unsettledRequiredSteps(steps: RunStepRecord[]): RunStepRecord[] {
+  return orderedSteps(steps).filter((step) => step.required && step.status === 'completed' ? false : step.required && step.status !== 'skipped');
 }
+
+export function failedSteps(steps: RunStepRecord[]): RunStepRecord[] {
+  return orderedSteps(steps).filter((step) => step.status === 'failed');
+}
+
+// ---------------------------------------------------------------------------
+// Derived health
+// ---------------------------------------------------------------------------
 
 /**
- * Linear execution guard (PRD 9.1 step 3): a step may only start when every
- * earlier required step is completed or skipped.
+ * How a run looks to a human right now.
+ *
+ * A run's stored status is not enough: a `running` run whose executor died and
+ * a `running` run that is simply slow look identical in storage. These states
+ * are derived on read and never persisted as the run's status, because "the
+ * heartbeat stopped" is not the same fact as "the work stopped".
  */
-export function assertLinearStart(
-  steps: ReadonlyArray<{ stepId: string; order: number; required: boolean; status: StepStatus }>,
-  stepId: string,
-): void {
-  const target = steps.find((step) => step.stepId === stepId)
-  if (!target) {
-    throw new TaskEngineError('TASK_STEP_ORDER_INVALID', `步骤 ${stepId} 不属于本次运行`)
-  }
-  const earlierBlocking = steps
-    .filter((step) => step.order < target.order && step.status !== 'completed' && step.status !== 'skipped')
-    .sort((a, b) => a.order - b.order)
-  if (earlierBlocking.length > 0) {
-    const names = earlierBlocking.map((step) => `${step.order}.${step.stepId}(${step.status})`).join(', ')
-    throw new TaskEngineError(
-      'TASK_STEP_ORDER_INVALID',
-      `必须按 order 顺序执行：步骤 ${target.order} 之前的 ${names} 尚未结束`,
-    )
-  }
+export type RunHealth =
+  | 'normal'
+  | 'timeout'
+  | 'suspected_stale'
+  | 'interrupted'
+  | 'awaiting_confirmation'
+  | 'blocked'
+  | 'finished';
+
+export interface RunHealthInput {
+  status: RunStatus;
+  startedAt: string;
+  lastHeartbeatAt?: string;
+  leaseExpiresAt?: string;
+  staleDetectedAt?: string;
+  needsUserConfirmation?: boolean;
 }
+
+export interface RunHealthResult {
+  health: RunHealth;
+  /** Human-readable reasons, newest first. Safe to show: no paths, no stack. */
+  reasons: string[];
+  /** True when the run may be resumed right now (subject to confirmation). */
+  resumable: boolean;
+  /** True when resuming would repeat work that may already have taken effect. */
+  needsConfirmation: boolean;
+}
+
+const MINUTE_MS = 60_000;
+
+export function runHealth(
+  run: RunHealthInput,
+  now: Date,
+  limits: { timeoutMinutes: number; staleMinutes: number },
+): RunHealthResult {
+  const reasons: string[] = [];
+  if (isTerminalRun(run.status)) {
+    if (run.status === 'interrupted') reasons.push('执行被中断，旧的执行实例已失效。');
+    if (run.status === 'failed') reasons.push('执行失败，可人工恢复。');
+    return {
+      health: run.status === 'interrupted' ? 'interrupted' : 'finished',
+      reasons,
+      resumable: RESUMABLE_RUN_STATUSES.includes(run.status),
+      needsConfirmation: run.needsUserConfirmation === true,
+    };
+  }
+
+  if (run.status === 'blocked') {
+    return {
+      health: 'blocked',
+      reasons: ['执行被阻塞，等待补充输入或权限。'],
+      resumable: true,
+      needsConfirmation: false,
+    };
+  }
+
+  const ageMinutes = (now.getTime() - Date.parse(run.startedAt)) / MINUTE_MS;
+  if (Number.isFinite(ageMinutes) && ageMinutes > limits.timeoutMinutes) {
+    reasons.push(`已运行 ${Math.round(ageMinutes)} 分钟，超过配置的运行上限 ${limits.timeoutMinutes} 分钟。`);
+    return { health: 'timeout', reasons, resumable: false, needsConfirmation: false };
+  }
+
+  const lastSignal = run.lastHeartbeatAt ?? run.staleDetectedAt;
+  if (lastSignal !== undefined) {
+    const silentMinutes = (now.getTime() - Date.parse(lastSignal)) / MINUTE_MS;
+    if (Number.isFinite(silentMinutes) && silentMinutes > limits.staleMinutes) {
+      reasons.push(`已 ${Math.round(silentMinutes)} 分钟没有心跳，疑似失联（待核验）。`);
+      return { health: 'suspected_stale', reasons, resumable: false, needsConfirmation: true };
+    }
+  }
+
+  if (run.leaseExpiresAt !== undefined) {
+    const leaseLeft = Date.parse(run.leaseExpiresAt) - now.getTime();
+    if (Number.isFinite(leaseLeft) && leaseLeft < 0) {
+      reasons.push('执行租约已过期，需要人工确认后才能恢复。');
+      return { health: 'suspected_stale', reasons, resumable: false, needsConfirmation: true };
+    }
+  }
+
+  if (run.needsUserConfirmation === true) {
+    return { health: 'awaiting_confirmation', reasons, resumable: true, needsConfirmation: true };
+  }
+
+  return { health: 'normal', reasons, resumable: false, needsConfirmation: false };
+}
+
+export const HEALTH_LABELS: Record<RunHealth, string> = {
+  normal: '运行中',
+  timeout: '已超时',
+  suspected_stale: '疑似失联',
+  interrupted: '已中断',
+  awaiting_confirmation: '等待确认',
+  blocked: '已阻塞',
+  finished: '已结束',
+};

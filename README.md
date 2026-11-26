@@ -23,7 +23,11 @@
 
 ## 安装
 
-要求：DSH **0.2.2-rc.3** 或兼容版本，且已挂载 `ctx.storageDomain`（官方 base bundle 默认以 `storage-domain backend: json` 挂载）。
+要求：DSH **0.2.2-rc.3**（Node 运行时 22+；实际验证于 Node 24.13.0）或兼容版本，
+且已挂载 `ctx.storageDomain`（官方 base bundle 默认以 `storage-domain backend: json` 挂载）。
+
+已验证的宿主接口（V1.2.0 基线，详见 `docs/API-COMPATIBILITY-AUDIT.md`）：
+`ctx.tools.register`、`ctx.storageDomain.open`、`ctx.schedule.create/edit/view/run`、`ctx.webServer.register`、插件配置表单（volatile）。
 
 ```sh
 # 从 npm 安装（已发布 1.0.2）
@@ -51,7 +55,7 @@ bundle patch 除插件行外不含任何其他内容，因此安装它不会改�
 
 ## 工具
 
-12 个模型可见工具，统一返回
+14 个模型可见工具，统一返回
 `{ success: true, ... }` 或 `{ success: false, error: { code, message, retryable, relatedRunId? } }`。
 
 | 工具 | 用途 | 关键参数 |
@@ -68,8 +72,23 @@ bundle patch 除插件行外不含任何其他内容，因此安装它不会改�
 | `task_run_finish` | 提交运行结果 | `runId`、`status`、`summary?`、`error?` |
 | `task_run_history` | 分页查询运行历史 | `taskId`、`status?`、`limit?`、`cursor?` |
 | `task_resume` | 恢复失败/中断/阻塞的运行 | `runId`、`confirmation?` |
+| `task_run_heartbeat` | 上报心跳并续租，防止被误判失联 | `runId`、`executionToken?`、`note?` |
+| `task_engine_status` | 查引擎诊断：存储/定时可用性、活动与中断计数、完整性、最近扫描 | `includeIntegrity?` |
 
 `task_schedule` 的 action：`create`、`update`、`pause`、`resume`、`delete`、`run_now`、`status`。timing 接受 `at`、`every`、`rrule`、`cron`、`daily`、`weekly`；其中 `daily`/`weekly` 会被转换成等价的 `RRULE`，以减少对宿主 shapes 的依赖。插件只保存 `scheduleId` 与少量引用，绝不复制 Cron 状态。
+
+## 任务看板
+
+输入框下方有一个「📋 任务」入口，展开是本会话的任务看板：
+
+- **列表**：名称、状态、触发方式、最近运行结果、更新时间；支持按状态筛选、按名称搜索、按更新时间排序。
+- **任务详情**：步骤、定时状态与下次执行时间、定时操作台账（含失败原因）、最近 20 次运行。
+- **运行详情**：步骤时间线（等待/执行中/已完成/失败/跳过）、开始与完成时间、失败原因与类别、最近心跳与租约、
+  是否需要人工确认；恢复按钮会带上人工确认说明。
+- **操作**：暂停、恢复、归档、恢复运行。所有写操作与服务端工具走同一套权限与状态校验，页面不做本地判断。
+
+看板数据来自插件自己的宿主路由 `/dsh-background-task/api/*`，按当前会话过滤；插件不提供会话枚举接口，
+也不会用别的会话去查数据。会话取自插槽参数/启动清单/地址栏，都取不到时会请你粘贴一次 Session ID。
 
 ## 执行协议
 
@@ -82,6 +101,8 @@ bundle patch 除插件行外不含任何其他内容，因此安装它不会改�
    `completed` 必须满足该步骤的 `completionCriteria`。
 4. 缺少输入、等待审批或外部条件不满足 → `task_run_finish(status:"blocked", summary:"…")`，并在摘要中写明在等什么。
 5. 全部必需步骤 completed → `task_run_finish(status:"succeeded")`。
+   步骤较长（外部命令、大批量文件）时，在步骤之间调用 `task_run_heartbeat(runId: …)`，
+   让看板与引擎知道你还在跑，而不是失联。
 6. 失败 → 先 `task_step_report(action:"failed", error:{…})`，**再**
    `task_run_finish(status:"failed")`。
 
@@ -101,15 +122,19 @@ task_run_begin({ triggerPayload: "<投递消息原文>" })
 
 ## 数据模型
 
-StorageDomain 单元为 `dsh_background_task_engine`，schema 版本 `1`
+StorageDomain 单元为 `dsh_background_task_engine`，schema 版本 `2`
 （必须用下划线形式：宿主的单元名规则是 `/^[a-z][a-z0-9_]*$/`）。
 
 | 表 | 主键 | 内容 |
 |---|---|---|
 | `tasks` | `taskId` | 模板、状态、revision、所属会话、步骤、定时引用 |
-| `task_runs` | `runId` | 状态、触发来源、快照、进度、时间、摘要/错误、`resumesRunId` |
-| `task_run_steps` | `runId/stepId` | 本次运行的步骤状态、尝试次数、时间、摘要/错误 |
-| `meta` | `global` | `schemaVersion`、迁移台账、恢复/清理时间戳 |
+| `task_runs` | `runId` | 状态、触发来源、快照、进度、时间、摘要/错误、`resumesRunId`、心跳/租约/执行凭证/失败类别 |
+| `task_run_steps` | `runId/stepId` | 本次运行的步骤状态、尝试次数、时间、摘要/错误、失败类别、恢复策略 |
+| `idempotency` | `taskId/idempotencyKey` | 幂等占位（`reserved`/`committed`），创建失败会被释放 |
+| `active_runs` | `runId` | 并发名额索引，按会话/任务计数，结束即释放 |
+| `run_index` | `taskId/startedAt/runId` | 按任务与开始时间的键集索引，供历史分页 |
+| `schedule_ops` | `operationId` | 定时操作台账：pending/processing/succeeded/failed/reconciling + `lastError` |
+| `meta` | `global` | `schemaVersion`、迁移台账、恢复/清理/对账时间戳 |
 
 状态机：
 
@@ -124,8 +149,24 @@ TaskRun  queued → running → succeeded | failed | blocked | interrupted
 `resumesRunId`；已完成步骤会被结转，从第一个未完成步骤继续；若失败步骤可能已产生副作用，
 必须提供显式的 `confirmation`。
 
-保留策略：终态运行及其步骤行超过 `historyRetentionDays`（默认 90 天）后，会在启动时被清理。
-活动运行、任务模板与审计事件永不清理。
+进度按「已完成必需步骤 ÷ 必需步骤总数」以 floor 计算，失败与跳过不计为完成；
+`task_runs` 上缓存的 `progress`/`currentStepId` 由步骤状态重算，漂移时 `task_run_begin` 或
+`task_engine_status` 之后的重算会修回（`reconcileRun`），因此步骤表始终是事实来源。
+
+保留策略：终态运行及其步骤行超过 `historyRetentionDays`（默认 90 天）后，会在启动时分批清理
+（每批 200 条，清理失败不影响正常执行）。活动运行、任务模板与审计事件永不清理。
+
+### 心跳、租约与失联
+
+每次运行拿到一个 `executionToken` 与 `executionGeneration`。`task_run_heartbeat`、
+`task_run_begin` 与 `task_step_report` 都会刷新 `lastHeartbeatAt` 并顺延 `leaseExpiresAt`：
+
+- 超过 `defaultTimeoutMinutes` 只标记 **超时**，不等于失败；
+- 超过 `staleRunAfterMinutes` 无心跳且进程仍在，只标记 **疑似失联**（写 `staleDetectedAt`），
+  不会自动重跑任何步骤；
+- 只有启动扫描能确认原执行已不在（宿主重启）时，才把运行置为 `interrupted` 并标记
+  `needsUserConfirmation=true`——因为无法核验外部副作用是否已经发生；
+- 恢复会生成新的 `executionToken`，旧凭证不能再修改新运行（`TASK_RUN_INTERRUPTED`）。
 
 ## 配置
 
@@ -144,8 +185,8 @@ TaskRun  queued → running → succeeded | failed | blocked | interrupted
 | `maxStepsPerTask` | 10 | 1–10 | 单任务步骤上限（V1.0 为线性） |
 | `maxActiveRunsPerOwner` | 3 | 1–20 | 每个会话并发 queued/running 上限 |
 | `maxParallelRunsPerTask` | 1 | 1 | 同一任务的并行运行数（V1.0 固定） |
-| `defaultTimeoutMinutes` | 60 | 1–1440 | 超时阈值，仅用于识别 |
-| `staleRunAfterMinutes` | 30 | 1–1440 | 启动扫描判定 `interrupted` 的失联时长 |
+| `defaultTimeoutMinutes` | 60 | 1–1440 | 单次运行的最长时间，超时只做标记，不判失败 |
+| `staleRunAfterMinutes` | 30 | 1–1440 | 无心跳多久算失联（心跳间隔的基准），与超时是两个独立阈值 |
 | `historyRetentionDays` | 90 | 1–3650 | 终态运行保留天数 |
 | `maxSummaryChars` | 2000 | 100–10000 | 摘要截断上限 |
 
@@ -171,6 +212,23 @@ TaskRun  queued → running → succeeded | failed | blocked | interrupted
 
 前 13 个是 PRD 规定的稳定错误码；后两个为补充码，用来确保意外失败不会被误报成 PRD 错误码。
 
+失败结果还会带结构化字段，便于 Agent 与界面直接展示，而不必解析文案：
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "TASK_STEP_ORDER_INVALID",
+    "message": "步骤 3 还不能开始，先完成步骤 2。",
+    "retryable": false,
+    "failedStepId": "stp_3",
+    "failedAt": "2026-11-26T09:12:00.000Z",
+    "failureCategory": "agent_error",
+    "needsUserConfirmation": false
+  }
+}
+```
+
 ## 安全
 
 - **会话隔离。** 每个工具入口都从 `exec.agent.session.id` 解析调用方会话并与记录归属比对。
@@ -190,7 +248,15 @@ TaskRun  queued → running → succeeded | failed | blocked | interrupted
    **只有迁移成功后**才写入台账标记。
 3. 若已存版本**高于**插件支持的版本，直接以 `TASK_STORAGE_ERROR` 拒绝——不允许静默降级。
 
-v1.0.0 起附带空迁移集（基线结构无需迁移）；运行器与台账已就位，未来结构变更只需新增一条迁移。
+迁移都是可重复执行的（以 `meta.appliedMigrations` 为台账），V1.2.0 带来三条：
+
+| 迁移 | 作用 |
+|---|---|
+| `v2-run-liveness-defaults` | 旧运行补 `schemaVersion=2`、`executionGeneration=1`、`lastHeartbeatAt=原 updatedAt`；**不设租约、不改状态** |
+| `v2-build-indexes` | 从运行表重建幂等表、活动索引与按任务索引 |
+| `v2-step-retry-policy` | 旧步骤补默认恢复策略 `verify_before_retry` |
+
+旧数据不会被误标为中断或失败：缺心跳字段只意味着「未知」，不意味着「已失效」。
 
 ## 排障
 
@@ -203,6 +269,9 @@ v1.0.0 起附带空迁移集（基线结构无需迁移）；运行器与台账�
 | `TASK_REVISION_CONFLICT` | 两次修改竞争 | 先 `task_get`，再用最新 `revision` 重试 |
 | 重启后运行变成 `interrupted` | 宿主中途停止，且不会自动重启 | 若某步骤可能有副作用，带 `confirmation` 调用 `task_resume` |
 | 安装被拒：*dsh.bundle.patch must be a file path* | 清单用了扁平写法 | 改用 `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }` |
+| 运行被标记「疑似失联」但进程还在 | 长步骤没有上报心跳 | 在步骤之间调用 `task_run_heartbeat`，或把 `staleRunAfterMinutes` 调大 |
+| 定时任务在跨日时早/晚一天触发 | 旧版本用 UTC 日期拼墙上时间 | 1.2.0 已改为按目标时区的本地日期生成 DTSTART；确认 `timeZone` 是合法 IANA 名 |
+| 任务看板显示「无法自动识别当前会话」 | 宿主插槽没有传会话 | 粘贴一次 Session ID（只需一次，之后记在本地） |
 
 ## 开发
 

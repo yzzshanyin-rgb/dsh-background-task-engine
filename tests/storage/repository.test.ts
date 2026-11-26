@@ -27,7 +27,7 @@ const NOW = '2026-11-26T01:00:00.000Z'
 
 function makeRepo(): { domain: FakeDomain; repo: Repository } {
   const domain = new FakeDomain(createDomainSpec() as never)
-  return { domain, repo: new Repository(domain as never, () => NOW) }
+  return { domain, repo: new Repository(domain as never, () => new Date(NOW)) }
 }
 
 function sampleTask(overrides: Partial<TaskRecord> = {}): TaskRecord {
@@ -63,7 +63,16 @@ describe('domain declaration', () => {
     const spec = createDomainSpec()
     expect(spec.name).toBe('dsh_background_task_engine')
     expect(spec.version).toBe(SCHEMA_VERSION)
-    expect(Object.keys(spec.tables).sort()).toEqual(['meta', 'task_run_steps', 'task_runs', 'tasks'])
+    expect(Object.keys(spec.tables).sort()).toEqual([
+      'active_runs',
+      'idempotency',
+      'meta',
+      'run_index',
+      'schedule_ops',
+      'task_run_steps',
+      'task_runs',
+      'tasks',
+    ])
     for (const table of Object.values(spec.tables)) {
       expect(typeof table.valueSchema.parse).toBe('function')
       expect(typeof table.valueSchema.safeParse).toBe('function')
@@ -96,13 +105,13 @@ describe('migrations', () => {
         runs += 1
       },
     }
-    const first = await runMigrations(domain as never, [probe], () => NOW)
+    const first = await runMigrations(domain as never, [probe], () => new Date(NOW))
     expect(first.applied).toEqual(['probe-1'])
     expect(runs).toBe(1)
 
-    const second = await runMigrations(domain as never, [probe], () => NOW)
+    const second = await runMigrations(domain as never, [probe], () => new Date(NOW))
     expect(second.applied).toEqual([])
-    expect(second.alreadyApplied).toEqual(['probe-1'])
+    expect(second.skipped).toEqual(['probe-1'])
     expect(runs).toBe(1)
 
     const state = readMeta(domain as never)!
@@ -119,7 +128,7 @@ describe('migrations', () => {
         throw new Error('boom')
       },
     }
-    await expect(runMigrations(domain as never, [broken], () => NOW)).rejects.toThrow(/迁移 broken 失败/)
+    await expect(runMigrations(domain as never, [broken], () => new Date(NOW))).rejects.toThrow(/迁移 broken 失败/)
     expect(readMeta(domain as never)?.appliedMigrations.broken).toBeUndefined()
   })
 
@@ -133,11 +142,19 @@ describe('migrations', () => {
       schemaVersion: SCHEMA_VERSION + 5,
       appliedMigrations: {},
     })
-    await expect(runMigrations(domain as never, [], () => NOW)).rejects.toThrow(/存储版本/)
+    await expect(runMigrations(domain as never, [], () => new Date(NOW))).rejects.toThrow(/更高版本/)
   })
 
-  it('ships no migration for v1 (the baseline shape needs none)', () => {
-    expect(MIGRATIONS).toHaveLength(0)
+  it('ships the repeatable v2 migrations and nothing for the v1 baseline', () => {
+    expect(MIGRATIONS.map((migration) => migration.id)).toEqual([
+      'v2-run-liveness-defaults',
+      'v2-build-indexes',
+      'v2-step-retry-policy',
+    ])
+    // Every migration must describe itself and stay callable twice.
+    for (const migration of MIGRATIONS) {
+      expect(migration.description.length).toBeGreaterThan(0)
+    }
   })
 })
 
@@ -167,7 +184,7 @@ describe('integrity verification', () => {
       updatedAt: NOW,
       templateSnapshot: {
         revision: 1,
-        title: 't',
+        title: '任务',
         steps: [{ stepId: 'stp_1', title: 's', instruction: 'i', order: 1, required: true }],
       },
       schemaVersion: SCHEMA_VERSION,
@@ -175,7 +192,7 @@ describe('integrity verification', () => {
     await repo.insertRun(run)
     const report = verifyIntegrity(domain as never)
     expect(report.ok).toBe(false)
-    expect(report.issues.join()).toContain('不存在的任务')
+    expect(report.issues.map((issue) => issue.kind)).toContain('missing-task')
   })
 })
 
@@ -197,7 +214,7 @@ describe('repository write semantics', () => {
   it('writes steps before the run so a crash cannot leave progress without a run', async () => {
     // Ordering is asserted on the recorded write log of the fake domain.
     const domain = new FakeDomain(createDomainSpec() as never)
-    const repo = new Repository(domain as never, () => NOW)
+    const repo = new Repository(domain as never, () => new Date(NOW))
     await repo.insertTask(sampleTask())
     const writes = domain.writes.map((write) => write.table)
     expect(writes[0]).toBe('tasks')
@@ -236,7 +253,7 @@ describe('repository write semantics', () => {
       attempt: 1,
       updatedAt: NOW,
     })
-    const result = await repo.deleteRunCascade(run.runId)
+    const result = await repo.deleteRunCascade(run)
     expect(result).toEqual({ stepsDeleted: 1, runDeleted: true })
     expect(repo.listSteps(run.runId)).toHaveLength(0)
   })
@@ -244,9 +261,9 @@ describe('repository write semantics', () => {
 
 describe('retention pruning', () => {
   function buildRunService(domain: FakeDomain, now: string): RunService {
-    const repo = new Repository(domain as never, () => now)
+    const repo = new Repository(domain as never, () => new Date(now))
     const audit = new AuditTrail({ emit: () => undefined, inject: () => undefined } as never)
-    return new RunService(repo, configRefs(), audit, () => now)
+    return new RunService(repo, configRefs(), audit, () => new Date(now))
   }
 
   it('removes only old terminal runs and never an active one', async () => {
@@ -274,8 +291,8 @@ describe('retention pruning', () => {
     })
 
     const pruned = await buildRunService(domain, new Date().toISOString()).prune()
-    expect(pruned.runs).toBe(2)
-    expect(pruned.steps).toBe(1)
+    expect(pruned.runsDeleted).toBe(2)
+    expect(pruned.stepsDeleted).toBe(1)
     const remaining = repo.listRuns().map((run) => run.runId)
     expect(remaining).toEqual(['run_old_running'])
     expect(repo.getTask('tsk_aaaaaaaaaaaaaaaaaaaa')).toBeTruthy()
@@ -310,9 +327,9 @@ describe('startup recovery', () => {
     })
 
     const audit = new AuditTrail({ emit: () => undefined, inject: () => undefined } as never)
-    const service = new RunService(repo, configRefs(), audit, () => new Date().toISOString())
-    const result = await service.recoverStale()
-    expect(result.interrupted).toEqual(['run_stale0000000000001'])
+    const service = new RunService(repo, configRefs(), audit, () => new Date())
+    const result = await service.scanStale({ startup: true })
+    expect(result.interrupted).toBe(1)
     expect(repo.getRun('run_stale0000000000001')!.status).toBe('interrupted')
     expect(repo.getStep('run_stale0000000000001', 'stp_1')!.status).toBe('failed')
     expect(repo.listRuns()).toHaveLength(1)
@@ -340,8 +357,8 @@ describe('startup recovery', () => {
       schemaVersion: SCHEMA_VERSION,
     })
     const audit = new AuditTrail({ emit: () => undefined, inject: () => undefined } as never)
-    const service = new RunService(repo, configRefs(), audit, () => now)
-    expect((await service.recoverStale()).interrupted).toEqual([])
+    const service = new RunService(repo, configRefs(), audit, () => new Date(now))
+    expect((await service.scanStale({ startup: true })).interrupted).toBe(0)
     expect(repo.getRun('run_fresh0000000000001')!.status).toBe('running')
   })
 })

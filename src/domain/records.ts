@@ -1,27 +1,28 @@
 /**
- * Persisted record schemas (PRD 5.x, 7.3).
+ * Persisted record shapes.
  *
- * Everything written to the StorageDomain is validated by these zod schemas
- * before it is stored and again when the domain is opened, so a corrupted or
- * hand-edited record fails loudly instead of silently degrading behaviour.
+ * Every record is parsed on write and re-parsed by the storage domain on load,
+ * so the zod schema here is the single source of truth for what may be stored.
+ * Fields added after 1.1.1 are optional with described defaults: a record
+ * written by an older version must load unchanged, and must never be
+ * reinterpreted as stale, interrupted, or failed just because the new fields
+ * are absent.
  */
 
-import { z } from 'zod'
+import { z } from 'zod';
 
-/** Bumped only when the persisted shape changes; drives the migration runner. */
-export const SCHEMA_VERSION = 1
+/** Bumped when the stored shape changes; migrations bring older rows forward. */
+export const SCHEMA_VERSION = 2;
 
 /**
- * StorageDomain unit name.
- *
- * The host's `UNIT_NAME_RE` is `/^[a-z][a-z0-9_]*$/` (verified against the
- * installed @deepseek-ai/dsh-storage), so the domain id uses underscores even
- * though the npm package name uses hyphens. The two are deliberately different
- * values: the package name is the npm identity, this is the storage unit.
+ * Storage unit name. The host's backend accepts `^[a-z][a-z0-9_]*$` only,
+ * which rules out the hyphenated package name.
  */
-export const DOMAIN_NAME = 'dsh_background_task_engine'
+export const DOMAIN_NAME = 'dsh_background_task_engine';
 
-export const TASK_STATUSES = ['active', 'paused', 'archived'] as const
+export const TASK_STATUSES = ['active', 'paused', 'archived'] as const;
+export type TaskStatus = (typeof TASK_STATUSES)[number];
+
 export const RUN_STATUSES = [
   'queued',
   'running',
@@ -30,47 +31,89 @@ export const RUN_STATUSES = [
   'failed',
   'interrupted',
   'skipped',
-] as const
-export const STEP_STATUSES = ['pending', 'running', 'completed', 'failed', 'skipped'] as const
-export const TRIGGER_TYPES = ['manual', 'schedule'] as const
+] as const;
+export type RunStatus = (typeof RUN_STATUSES)[number];
 
-export type TaskStatus = (typeof TASK_STATUSES)[number]
-export type RunStatus = (typeof RUN_STATUSES)[number]
-export type StepStatus = (typeof STEP_STATUSES)[number]
-export type TriggerType = (typeof TRIGGER_TYPES)[number]
+export const STEP_STATUSES = ['pending', 'running', 'completed', 'failed', 'skipped'] as const;
+export type StepStatus = (typeof STEP_STATUSES)[number];
 
-const idSchema = z.string().min(4).max(64)
-const timestampSchema = z.string().min(20).max(40)
+export const TRIGGER_TYPES = ['manual', 'schedule'] as const;
+export type TriggerType = (typeof TRIGGER_TYPES)[number];
+
+/**
+ * How a step may be retried after a failure.
+ *
+ * The plugin never decides this from the instruction text: `manual_only` is the
+ * conservative default for steps that touch the outside world, and only the
+ * author of the task may lower it.
+ */
+export const RETRY_POLICIES = ['safe_retry', 'verify_before_retry', 'manual_only'] as const;
+export type RetryPolicy = (typeof RETRY_POLICIES)[number];
+
+/** Coarse cause of a failure, surfaced to the agent and the UI. */
+export const FAILURE_CATEGORIES = [
+  'agent_error',
+  'tool_error',
+  'timeout',
+  'permission',
+  'missing_input',
+  'external_side_effect',
+  'unknown',
+] as const;
+export type FailureCategory = (typeof FAILURE_CATEGORIES)[number];
+
+/** What a schedule operation asked for, recorded before the host is touched. */
+export const SCHEDULE_ACTIONS = ['create', 'update', 'pause', 'resume', 'delete'] as const;
+export type ScheduleAction = (typeof SCHEDULE_ACTIONS)[number];
+
+/**
+ * Journal state of one schedule mutation.
+ *
+ * `pending` exists before the host call, so a crash in between is visible on
+ * the next boot instead of silently half-applied. `reconciling` means the
+ * startup pass could not settle it without guessing.
+ */
+export const SCHEDULE_OP_STATUSES = ['pending', 'processing', 'succeeded', 'failed', 'reconciling'] as const;
+export type ScheduleOpStatus = (typeof SCHEDULE_OP_STATUSES)[number];
+
+export const idSchema = z.string().min(4).max(64);
+export const timestampSchema = z.string().min(20).max(40);
 
 export const stepErrorSchema = z.object({
   code: z.string().min(1).max(64),
   message: z.string().min(1).max(2000),
-})
+});
+export type StepError = z.infer<typeof stepErrorSchema>;
 
 export const stepDefinitionSchema = z.object({
   stepId: idSchema,
   title: z.string().min(1).max(120),
   instruction: z.string().min(1).max(8000),
-  completionCriteria: z.string().max(2000).optional(),
+  completionCriteria: z.string().max(4000).optional(),
   order: z.number().int().min(1).max(10),
   required: z.boolean(),
-})
+  /** Absent on rows written before 1.2.0 — read as {@link DEFAULT_RETRY_POLICY}. */
+  retryPolicy: z.enum(RETRY_POLICIES).optional(),
+});
+export type StepDefinition = z.infer<typeof stepDefinitionSchema>;
 
-export type StepDefinition = z.infer<typeof stepDefinitionSchema>
+export const DEFAULT_RETRY_POLICY: RetryPolicy = 'verify_before_retry';
 
 export const scheduleRefSchema = z.object({
   scheduleId: z.string().min(1).max(128),
-  /** Original timing kind requested by the user (at / every / rrule). */
   timingKind: z.string().min(1).max(32),
   timing: z.record(z.unknown()),
   state: z.enum(['active', 'paused', 'unlinked']),
   title: z.string().max(120),
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
-  lastError: stepErrorSchema.optional(),
-})
-
-export type ScheduleRef = z.infer<typeof scheduleRefSchema>
+  lastError: z.string().max(2000).optional(),
+  /** Wall clock the next occurrence is expected at, when the host reports one. */
+  nextRunAt: timestampSchema.optional(),
+  /** IANA zone the timing was authored in; the host keeps it per timing kind. */
+  timeZone: z.string().max(64).optional(),
+});
+export type ScheduleRef = z.infer<typeof scheduleRefSchema>;
 
 export const taskRecordSchema = z.object({
   taskId: idSchema,
@@ -78,41 +121,46 @@ export const taskRecordSchema = z.object({
   description: z.string().max(2000).optional(),
   status: z.enum(TASK_STATUSES),
   revision: z.number().int().min(1),
-  ownerSessionId: z.string().min(1).max(256),
+  ownerSessionId: z.string().min(1).max(128),
   steps: z.array(stepDefinitionSchema).min(1).max(10),
   scheduleRef: scheduleRefSchema.optional(),
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
-  schemaVersion: z.number().int().min(1),
-})
-
-export type TaskRecord = z.infer<typeof taskRecordSchema>
+  schemaVersion: z.number().int().min(0),
+});
+export type TaskRecord = z.infer<typeof taskRecordSchema>;
 
 export const templateSnapshotSchema = z.object({
   revision: z.number().int().min(1),
-  title: z.string().min(1).max(80),
+  title: z.string().min(2).max(80),
   steps: z.array(stepDefinitionSchema).min(1).max(10),
-})
+});
+export type TemplateSnapshot = z.infer<typeof templateSnapshotSchema>;
 
-export type TemplateSnapshot = z.infer<typeof templateSnapshotSchema>
+/** The user's confirmation that re-running a run may repeat external effects. */
+export const recoveryConfirmationSchema = z.object({
+  sourceRunId: idSchema,
+  failedStepIds: z.array(z.string().min(1).max(64)).max(10),
+  confirmedAt: timestampSchema,
+  confirmationNote: z.string().max(2000).optional(),
+});
+export type RecoveryConfirmation = z.infer<typeof recoveryConfirmationSchema>;
 
 export const runRecordSchema = z.object({
   runId: idSchema,
   taskId: idSchema,
   taskRevision: z.number().int().min(1),
-  /** Owner of the task; every tool entry point compares this with the caller. */
-  taskOwnerSessionId: z.string().min(1).max(256),
-  /** Session that started the run (equals owner in V1.0). */
-  sessionId: z.string().min(1).max(256),
+  taskOwnerSessionId: z.string().min(1).max(128),
+  sessionId: z.string().min(1).max(128),
   status: z.enum(RUN_STATUSES),
   triggerType: z.enum(TRIGGER_TYPES),
   scheduleId: z.string().max(128).optional(),
   occurrenceKey: z.string().max(256).optional(),
   idempotencyKey: z.string().max(300).optional(),
-  currentStepId: idSchema.optional(),
+  currentStepId: z.string().max(64).optional(),
   progress: z.number().int().min(0).max(100),
-  requiredTotal: z.number().int().min(0).max(10),
-  requiredCompleted: z.number().int().min(0).max(10),
+  requiredTotal: z.number().int().min(0),
+  requiredCompleted: z.number().int().min(0),
   totalSteps: z.number().int().min(1).max(10),
   startedAt: timestampSchema,
   updatedAt: timestampSchema,
@@ -121,10 +169,29 @@ export const runRecordSchema = z.object({
   error: stepErrorSchema.optional(),
   resumesRunId: idSchema.optional(),
   templateSnapshot: templateSnapshotSchema,
-  schemaVersion: z.number().int().min(1),
-})
+  schemaVersion: z.number().int().min(0),
 
-export type RunRecord = z.infer<typeof runRecordSchema>
+  // ---- 1.2.0 liveness. Absent on older rows, and absence means "unknown",
+  // never "expired": a run written by 1.1.1 must not be marked interrupted
+  // merely because it has no heartbeat.
+  /** Last heartbeat or step report accepted for this run. */
+  lastHeartbeatAt: timestampSchema.optional(),
+  /** Wall clock after which the run's execution credential is assumed dead. */
+  leaseExpiresAt: timestampSchema.optional(),
+  /** Credential handed to the agent that owns this execution. */
+  executionToken: z.string().max(128).optional(),
+  /** Increments when the same logical work is re-adopted by a new execution. */
+  executionGeneration: z.number().int().min(1).optional(),
+  /** First time the engine suspected the run had lost its executor. */
+  staleDetectedAt: timestampSchema.optional(),
+  /** Coarse cause, populated on failure/interruption. */
+  failureCategory: z.enum(FAILURE_CATEGORIES).optional(),
+  /** True when resuming would repeat work that may already have taken effect. */
+  needsUserConfirmation: z.boolean().optional(),
+  /** The confirmation this run was started with, if any. */
+  recoveryConfirmation: recoveryConfirmationSchema.optional(),
+});
+export type RunRecord = z.infer<typeof runRecordSchema>;
 
 export const runStepRecordSchema = z.object({
   runId: idSchema,
@@ -137,33 +204,118 @@ export const runStepRecordSchema = z.object({
   attempt: z.number().int().min(0).max(100),
   startedAt: timestampSchema.optional(),
   finishedAt: timestampSchema.optional(),
-  summary: z.string().max(20000).optional(),
+  summary: z.string().max(4000).optional(),
   error: stepErrorSchema.optional(),
-  /** Set when a resume carries a completed step over into the new run. */
   carryOverFromRunId: idSchema.optional(),
   updatedAt: timestampSchema,
-})
+  /** 1.2.0: why this step failed, and how it may be retried. */
+  failureCategory: z.enum(FAILURE_CATEGORIES).optional(),
+  retryPolicy: z.enum(RETRY_POLICIES).optional(),
+  lastHeartbeatAt: timestampSchema.optional(),
+});
+export type RunStepRecord = z.infer<typeof runStepRecordSchema>;
 
-export type RunStepRecord = z.infer<typeof runStepRecordSchema>
+/**
+ * Idempotency reservation.
+ *
+ * Written before the run row so two concurrent triggers with the same key
+ * cannot both create a run, and removed when the creation fails so a retry is
+ * possible. `state: 'committed'` means the run exists.
+ */
+export const idempotencyRecordSchema = z.object({
+  taskId: idSchema,
+  idempotencyKey: z.string().min(1).max(300),
+  ownerSessionId: z.string().min(1).max(128),
+  state: z.enum(['reserved', 'committed']),
+  runId: idSchema.optional(),
+  createdAt: timestampSchema,
+  updatedAt: timestampSchema,
+});
+export type IdempotencyRecord = z.infer<typeof idempotencyRecordSchema>;
+
+/**
+ * Concurrency accounting: one row per non-terminal run.
+ *
+ * Counting the index is O(active runs); scanning every run to count them is
+ * not, and the PRD's 50k-run dataset makes the difference observable. The
+ * index is rebuilt from persisted runs on boot, so a crash cannot leak a slot.
+ */
+export const activeRunRecordSchema = z.object({
+  runId: idSchema,
+  taskId: idSchema,
+  ownerSessionId: z.string().min(1).max(128),
+  sessionId: z.string().min(1).max(128),
+  startedAt: timestampSchema,
+  leaseExpiresAt: timestampSchema.optional(),
+});
+export type ActiveRunRecord = z.infer<typeof activeRunRecordSchema>;
+
+/**
+ * Per-task run index, ordered by creation time then run id.
+ *
+ * This is what makes history pagination a range read instead of a scan of every
+ * run in the domain, and what keeps the cursor stable when two runs share a
+ * millisecond.
+ */
+export const runIndexRecordSchema = z.object({
+  runId: idSchema,
+  taskId: idSchema,
+  ownerSessionId: z.string().min(1).max(128),
+  status: z.enum(RUN_STATUSES),
+  startedAt: timestampSchema,
+});
+export type RunIndexRecord = z.infer<typeof runIndexRecordSchema>;
+
+/** One journal row per schedule mutation, so a half-applied change is visible. */
+export const scheduleOpRecordSchema = z.object({
+  operationId: idSchema,
+  taskId: idSchema,
+  ownerSessionId: z.string().min(1).max(128),
+  scheduleId: z.string().max(128).optional(),
+  action: z.enum(SCHEDULE_ACTIONS),
+  status: z.enum(SCHEDULE_OP_STATUSES),
+  /** Timing the operation was asked to install, replayed by reconciliation. */
+  timing: z.record(z.unknown()).optional(),
+  createdAt: timestampSchema,
+  updatedAt: timestampSchema,
+  lastError: z.string().max(2000).optional(),
+  /** Set when reconciliation settled the row, for the audit trail. */
+  reconciledAt: timestampSchema.optional(),
+});
+export type ScheduleOpRecord = z.infer<typeof scheduleOpRecordSchema>;
 
 export const globalStateSchema = z.object({
-  schemaVersion: z.number().int().min(1),
-  /** migrationId -> ISO timestamp; presence means "already applied". */
+  schemaVersion: z.number().int().min(0),
   appliedMigrations: z.record(z.string()),
   lastRecoveryScanAt: timestampSchema.optional(),
   lastPruneAt: timestampSchema.optional(),
-})
+  /** Last time the schedule journal was reconciled. */
+  lastScheduleReconcileAt: timestampSchema.optional(),
+});
+export type GlobalState = z.infer<typeof globalStateSchema>;
 
-export type GlobalState = z.infer<typeof globalStateSchema>
-
-/** Table names, kept in one place so spec and repository cannot drift. */
 export const TABLES = {
   tasks: 'tasks',
   runs: 'task_runs',
   steps: 'task_run_steps',
-} as const
+  idempotency: 'idempotency',
+  activeRuns: 'active_runs',
+  runIndex: 'run_index',
+  scheduleOps: 'schedule_ops',
+  meta: 'meta',
+} as const;
 
-/** Composite key for one step record: one row per (runId, stepId). */
+/** `${runId}/${stepId}` — the composite key of the step table. */
 export function stepKey(runId: string, stepId: string): string {
-  return `${runId}/${stepId}`
+  return `${runId}/${stepId}`;
+}
+
+/** `${taskId}/${startedAt}/${runId}` — sortable per-task run index key. */
+export function runIndexKey(taskId: string, startedAt: string, runId: string): string {
+  return `${taskId}/${startedAt}/${runId}`;
+}
+
+/** `${taskId}/${idempotencyKey}` — one reservation per key per task. */
+export function idempotencyKeyOf(taskId: string, idempotencyKey: string): string {
+  return `${taskId}/${idempotencyKey}`;
 }

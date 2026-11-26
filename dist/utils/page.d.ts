@@ -34,3 +34,5 @@ export declare function paginate<T>(sorted: T[], options: {
 }): PageSlice<T>;
 /** Descending comparator over (timestamp, id). */
 export declare function compareDesc(aTs: string, aId: string, bTs: string, bId: string): number;
+/** Normalise a caller-supplied limit against an endpoint-specific ceiling. */
+export declare function clampLimit(limit: number | undefined, fallback: number, max: number): number;

@@ -1,35 +1,49 @@
 /**
- * TaskEngine: composition root for the plugin (PRD 8.2, 8.4, FR-012).
+ * TaskEngine: composition root for the plugin (PRD 8.2, 8.4, FR-012, 1.2.0 §5).
  *
  * Startup sequence (all failures are explicit, never silent):
  *   1. open the StorageDomain declared in src/storage/spec.ts
  *   2. run idempotent migrations from the persisted ledger
  *   3. verify record integrity (runs reference tasks, steps belong to runs)
- *   4. recover stale `queued`/`running` rows into `interrupted`
- *   5. prune terminal runs older than `historyRetentionDays`
+ *   4. reconcile schedule journals a previous process left open
+ *   5. scan for stale runs — at startup a dead run becomes `interrupted`,
+ *      while during a session it is only marked as suspected
+ *   6. prune terminal runs older than `historyRetentionDays`
  *
  * If step 1 fails the `ready` promise rejects and every tool returns
  * TASK_STORAGE_ERROR — the plugin does not fall back to in-memory storage
  * (PRD 16.3).
  */
 import { type HostContextLike } from '../host.js';
+import { TaskEngineError } from '../errors.js';
 import type { EngineConfig } from '../config.js';
-import { type MigrationReport, type IntegrityReport } from '../storage/spec.js';
+import { Repository } from '../storage/repository.js';
+import { type IntegrityReport } from '../storage/spec.js';
 import { ScheduleAdapter } from './schedule-adapter.js';
 import { TaskService } from './task-service.js';
 import { RunService } from './run-service.js';
+export type IntegrityStatus = 'ok' | 'issues' | 'unknown';
 export interface EngineDiagnostics {
     storageAvailable: boolean;
     scheduleAvailable: boolean;
     activeRunCount: number;
+    blockedRunCount: number;
+    interruptedRunCount: number;
     schemaVersion: number;
     taskCount: number;
     runCount: number;
     lastRecoveryScanAt?: string;
     lastPruneAt?: string;
+    lastScheduleReconcileAt?: string;
     staleRunsInterrupted: number;
+    staleRunsSuspected: number;
+    unsettledScheduleOps: number;
+    integrityStatus: IntegrityStatus;
     integrity: IntegrityReport | null;
-    migrations: MigrationReport | null;
+    migrations: {
+        applied: string[];
+        skipped: string[];
+    } | null;
     lastError?: string;
 }
 export declare class TaskEngine {
@@ -41,6 +55,7 @@ export declare class TaskEngine {
     private repo?;
     private audit?;
     private schedules?;
+    private ledger?;
     private tasks?;
     private runs?;
     private initError?;
@@ -54,7 +69,19 @@ export declare class TaskEngine {
     get runService(): RunService;
     /** TaskService may be used for schedule-only operations; storage must be ready. */
     get scheduleAdapter(): ScheduleAdapter;
+    get repository(): Repository;
+    get startupError(): TaskEngineError | undefined;
+    /**
+     * Diagnostics for one caller.
+     *
+     * Every number is read from the persisted tables at call time — never from a
+     * cached snapshot — so a report can be trusted as "what the store says now".
+     */
     diagnosticsFor(sessionId: string): Promise<EngineDiagnostics>;
+    /** Re-verify integrity on demand (used by the status tool and the UI). */
+    recheckIntegrity(): IntegrityReport | null;
+    /** Recompute the cached counters without touching persistence. */
+    refreshCounters(): void;
     /** Release the domain handle. User data is never deleted. */
     dispose(): Promise<void>;
 }
@@ -74,6 +101,7 @@ export declare const domainSchemas: {
             completionCriteria: import("zod").ZodOptional<import("zod").ZodString>;
             order: import("zod").ZodNumber;
             required: import("zod").ZodBoolean;
+            retryPolicy: import("zod").ZodOptional<import("zod").ZodEnum<["safe_retry", "verify_before_retry", "manual_only"]>>;
         }, "strip", import("zod").ZodTypeAny, {
             title: string;
             stepId: string;
@@ -81,6 +109,7 @@ export declare const domainSchemas: {
             order: number;
             required: boolean;
             completionCriteria?: string | undefined;
+            retryPolicy?: "safe_retry" | "verify_before_retry" | "manual_only" | undefined;
         }, {
             title: string;
             stepId: string;
@@ -88,6 +117,7 @@ export declare const domainSchemas: {
             order: number;
             required: boolean;
             completionCriteria?: string | undefined;
+            retryPolicy?: "safe_retry" | "verify_before_retry" | "manual_only" | undefined;
         }>, "many">;
         scheduleRef: import("zod").ZodOptional<import("zod").ZodObject<{
             scheduleId: import("zod").ZodString;
@@ -97,16 +127,9 @@ export declare const domainSchemas: {
             title: import("zod").ZodString;
             createdAt: import("zod").ZodString;
             updatedAt: import("zod").ZodString;
-            lastError: import("zod").ZodOptional<import("zod").ZodObject<{
-                code: import("zod").ZodString;
-                message: import("zod").ZodString;
-            }, "strip", import("zod").ZodTypeAny, {
-                code: string;
-                message: string;
-            }, {
-                code: string;
-                message: string;
-            }>>;
+            lastError: import("zod").ZodOptional<import("zod").ZodString>;
+            nextRunAt: import("zod").ZodOptional<import("zod").ZodString>;
+            timeZone: import("zod").ZodOptional<import("zod").ZodString>;
         }, "strip", import("zod").ZodTypeAny, {
             title: string;
             createdAt: string;
@@ -115,10 +138,9 @@ export declare const domainSchemas: {
             timingKind: string;
             timing: Record<string, unknown>;
             state: "active" | "paused" | "unlinked";
-            lastError?: {
-                code: string;
-                message: string;
-            } | undefined;
+            lastError?: string | undefined;
+            nextRunAt?: string | undefined;
+            timeZone?: string | undefined;
         }, {
             title: string;
             createdAt: string;
@@ -127,10 +149,9 @@ export declare const domainSchemas: {
             timingKind: string;
             timing: Record<string, unknown>;
             state: "active" | "paused" | "unlinked";
-            lastError?: {
-                code: string;
-                message: string;
-            } | undefined;
+            lastError?: string | undefined;
+            nextRunAt?: string | undefined;
+            timeZone?: string | undefined;
         }>>;
         createdAt: import("zod").ZodString;
         updatedAt: import("zod").ZodString;
@@ -150,6 +171,7 @@ export declare const domainSchemas: {
             order: number;
             required: boolean;
             completionCriteria?: string | undefined;
+            retryPolicy?: "safe_retry" | "verify_before_retry" | "manual_only" | undefined;
         }[];
         schemaVersion: number;
         description?: string | undefined;
@@ -161,10 +183,9 @@ export declare const domainSchemas: {
             timingKind: string;
             timing: Record<string, unknown>;
             state: "active" | "paused" | "unlinked";
-            lastError?: {
-                code: string;
-                message: string;
-            } | undefined;
+            lastError?: string | undefined;
+            nextRunAt?: string | undefined;
+            timeZone?: string | undefined;
         } | undefined;
     }, {
         title: string;
@@ -181,6 +202,7 @@ export declare const domainSchemas: {
             order: number;
             required: boolean;
             completionCriteria?: string | undefined;
+            retryPolicy?: "safe_retry" | "verify_before_retry" | "manual_only" | undefined;
         }[];
         schemaVersion: number;
         description?: string | undefined;
@@ -192,10 +214,9 @@ export declare const domainSchemas: {
             timingKind: string;
             timing: Record<string, unknown>;
             state: "active" | "paused" | "unlinked";
-            lastError?: {
-                code: string;
-                message: string;
-            } | undefined;
+            lastError?: string | undefined;
+            nextRunAt?: string | undefined;
+            timeZone?: string | undefined;
         } | undefined;
     }>;
     runs: import("zod").ZodObject<{
@@ -239,6 +260,7 @@ export declare const domainSchemas: {
                 completionCriteria: import("zod").ZodOptional<import("zod").ZodString>;
                 order: import("zod").ZodNumber;
                 required: import("zod").ZodBoolean;
+                retryPolicy: import("zod").ZodOptional<import("zod").ZodEnum<["safe_retry", "verify_before_retry", "manual_only"]>>;
             }, "strip", import("zod").ZodTypeAny, {
                 title: string;
                 stepId: string;
@@ -246,6 +268,7 @@ export declare const domainSchemas: {
                 order: number;
                 required: boolean;
                 completionCriteria?: string | undefined;
+                retryPolicy?: "safe_retry" | "verify_before_retry" | "manual_only" | undefined;
             }, {
                 title: string;
                 stepId: string;
@@ -253,6 +276,7 @@ export declare const domainSchemas: {
                 order: number;
                 required: boolean;
                 completionCriteria?: string | undefined;
+                retryPolicy?: "safe_retry" | "verify_before_retry" | "manual_only" | undefined;
             }>, "many">;
         }, "strip", import("zod").ZodTypeAny, {
             title: string;
@@ -264,6 +288,7 @@ export declare const domainSchemas: {
                 order: number;
                 required: boolean;
                 completionCriteria?: string | undefined;
+                retryPolicy?: "safe_retry" | "verify_before_retry" | "manual_only" | undefined;
             }[];
         }, {
             title: string;
@@ -275,9 +300,33 @@ export declare const domainSchemas: {
                 order: number;
                 required: boolean;
                 completionCriteria?: string | undefined;
+                retryPolicy?: "safe_retry" | "verify_before_retry" | "manual_only" | undefined;
             }[];
         }>;
         schemaVersion: import("zod").ZodNumber;
+        lastHeartbeatAt: import("zod").ZodOptional<import("zod").ZodString>;
+        leaseExpiresAt: import("zod").ZodOptional<import("zod").ZodString>;
+        executionToken: import("zod").ZodOptional<import("zod").ZodString>;
+        executionGeneration: import("zod").ZodOptional<import("zod").ZodNumber>;
+        staleDetectedAt: import("zod").ZodOptional<import("zod").ZodString>;
+        failureCategory: import("zod").ZodOptional<import("zod").ZodEnum<["agent_error", "tool_error", "timeout", "permission", "missing_input", "external_side_effect", "unknown"]>>;
+        needsUserConfirmation: import("zod").ZodOptional<import("zod").ZodBoolean>;
+        recoveryConfirmation: import("zod").ZodOptional<import("zod").ZodObject<{
+            sourceRunId: import("zod").ZodString;
+            failedStepIds: import("zod").ZodArray<import("zod").ZodString, "many">;
+            confirmedAt: import("zod").ZodString;
+            confirmationNote: import("zod").ZodOptional<import("zod").ZodString>;
+        }, "strip", import("zod").ZodTypeAny, {
+            sourceRunId: string;
+            failedStepIds: string[];
+            confirmedAt: string;
+            confirmationNote?: string | undefined;
+        }, {
+            sourceRunId: string;
+            failedStepIds: string[];
+            confirmedAt: string;
+            confirmationNote?: string | undefined;
+        }>>;
     }, "strip", import("zod").ZodTypeAny, {
         status: "queued" | "running" | "blocked" | "succeeded" | "failed" | "interrupted" | "skipped";
         updatedAt: string;
@@ -303,6 +352,7 @@ export declare const domainSchemas: {
                 order: number;
                 required: boolean;
                 completionCriteria?: string | undefined;
+                retryPolicy?: "safe_retry" | "verify_before_retry" | "manual_only" | undefined;
             }[];
         };
         scheduleId?: string | undefined;
@@ -316,6 +366,19 @@ export declare const domainSchemas: {
             message: string;
         } | undefined;
         resumesRunId?: string | undefined;
+        lastHeartbeatAt?: string | undefined;
+        leaseExpiresAt?: string | undefined;
+        executionToken?: string | undefined;
+        executionGeneration?: number | undefined;
+        staleDetectedAt?: string | undefined;
+        failureCategory?: "agent_error" | "tool_error" | "timeout" | "permission" | "missing_input" | "external_side_effect" | "unknown" | undefined;
+        needsUserConfirmation?: boolean | undefined;
+        recoveryConfirmation?: {
+            sourceRunId: string;
+            failedStepIds: string[];
+            confirmedAt: string;
+            confirmationNote?: string | undefined;
+        } | undefined;
     }, {
         status: "queued" | "running" | "blocked" | "succeeded" | "failed" | "interrupted" | "skipped";
         updatedAt: string;
@@ -341,6 +404,7 @@ export declare const domainSchemas: {
                 order: number;
                 required: boolean;
                 completionCriteria?: string | undefined;
+                retryPolicy?: "safe_retry" | "verify_before_retry" | "manual_only" | undefined;
             }[];
         };
         scheduleId?: string | undefined;
@@ -354,6 +418,19 @@ export declare const domainSchemas: {
             message: string;
         } | undefined;
         resumesRunId?: string | undefined;
+        lastHeartbeatAt?: string | undefined;
+        leaseExpiresAt?: string | undefined;
+        executionToken?: string | undefined;
+        executionGeneration?: number | undefined;
+        staleDetectedAt?: string | undefined;
+        failureCategory?: "agent_error" | "tool_error" | "timeout" | "permission" | "missing_input" | "external_side_effect" | "unknown" | undefined;
+        needsUserConfirmation?: boolean | undefined;
+        recoveryConfirmation?: {
+            sourceRunId: string;
+            failedStepIds: string[];
+            confirmedAt: string;
+            confirmationNote?: string | undefined;
+        } | undefined;
     }>;
     steps: import("zod").ZodObject<{
         runId: import("zod").ZodString;
@@ -379,6 +456,9 @@ export declare const domainSchemas: {
         }>>;
         carryOverFromRunId: import("zod").ZodOptional<import("zod").ZodString>;
         updatedAt: import("zod").ZodString;
+        failureCategory: import("zod").ZodOptional<import("zod").ZodEnum<["agent_error", "tool_error", "timeout", "permission", "missing_input", "external_side_effect", "unknown"]>>;
+        retryPolicy: import("zod").ZodOptional<import("zod").ZodEnum<["safe_retry", "verify_before_retry", "manual_only"]>>;
+        lastHeartbeatAt: import("zod").ZodOptional<import("zod").ZodString>;
     }, "strip", import("zod").ZodTypeAny, {
         title: string;
         status: "running" | "failed" | "skipped" | "pending" | "completed";
@@ -389,6 +469,7 @@ export declare const domainSchemas: {
         taskId: string;
         runId: string;
         attempt: number;
+        retryPolicy?: "safe_retry" | "verify_before_retry" | "manual_only" | undefined;
         startedAt?: string | undefined;
         finishedAt?: string | undefined;
         summary?: string | undefined;
@@ -396,6 +477,8 @@ export declare const domainSchemas: {
             code: string;
             message: string;
         } | undefined;
+        lastHeartbeatAt?: string | undefined;
+        failureCategory?: "agent_error" | "tool_error" | "timeout" | "permission" | "missing_input" | "external_side_effect" | "unknown" | undefined;
         carryOverFromRunId?: string | undefined;
     }, {
         title: string;
@@ -407,6 +490,7 @@ export declare const domainSchemas: {
         taskId: string;
         runId: string;
         attempt: number;
+        retryPolicy?: "safe_retry" | "verify_before_retry" | "manual_only" | undefined;
         startedAt?: string | undefined;
         finishedAt?: string | undefined;
         summary?: string | undefined;
@@ -414,6 +498,8 @@ export declare const domainSchemas: {
             code: string;
             message: string;
         } | undefined;
+        lastHeartbeatAt?: string | undefined;
+        failureCategory?: "agent_error" | "tool_error" | "timeout" | "permission" | "missing_input" | "external_side_effect" | "unknown" | undefined;
         carryOverFromRunId?: string | undefined;
     }>;
     meta: import("zod").ZodObject<{
@@ -421,15 +507,18 @@ export declare const domainSchemas: {
         appliedMigrations: import("zod").ZodRecord<import("zod").ZodString, import("zod").ZodString>;
         lastRecoveryScanAt: import("zod").ZodOptional<import("zod").ZodString>;
         lastPruneAt: import("zod").ZodOptional<import("zod").ZodString>;
+        lastScheduleReconcileAt: import("zod").ZodOptional<import("zod").ZodString>;
     }, "strip", import("zod").ZodTypeAny, {
         schemaVersion: number;
         appliedMigrations: Record<string, string>;
         lastRecoveryScanAt?: string | undefined;
         lastPruneAt?: string | undefined;
+        lastScheduleReconcileAt?: string | undefined;
     }, {
         schemaVersion: number;
         appliedMigrations: Record<string, string>;
         lastRecoveryScanAt?: string | undefined;
         lastPruneAt?: string | undefined;
+        lastScheduleReconcileAt?: string | undefined;
     }>;
 };

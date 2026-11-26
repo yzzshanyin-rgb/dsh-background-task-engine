@@ -1,97 +1,65 @@
 /**
- * StorageDomain declaration, migration runner and startup integrity checks
- * (PRD 4.10, 7.3, 7.4, FR-010, FR-012).
+ * Domain declaration and schema migrations.
  *
- * `ctx.storageDomain` is the only persistence backend. There is deliberately no
- * in-memory fallback: without a StorageDomain the engine refuses to start
- * (PRD FR-012, 16.3).
+ * The storage domain has no transaction log and no automatic migration runner:
+ * `compatibleVersions` only relaxes reading. Everything a new version needs is
+ * therefore done by explicit, repeatable migrations that record themselves in
+ * the ledger before the next one runs, and that leave rows untouched when they
+ * are already at the target shape.
  */
-import type { DomainLike } from '../host.js';
-import { type GlobalState, type RunRecord, type RunStepRecord, type TaskRecord } from '../domain/records.js';
-export interface DomainSpecLike {
-    name: string;
-    version: number;
-    layout?: 'single' | 'per-record';
-    compatibleVersions?: readonly number[];
-    tables: Record<string, {
-        valueSchema: {
-            parse(value: unknown): unknown;
-            safeParse(value: unknown): {
-                success: boolean;
-            };
-        };
-    }>;
-}
-/**
- * The domain descriptor.
- *
- * Four tables, not three: `meta` holds the schema version, the idempotent
- * migration ledger and recovery/prune timestamps (PRD 7.4 requires the version
- * and an "already applied" marker to be persisted; the PRD 4.10 table list
- * covers the model tables only).
- */
-/**
- * Host rule for domain and table names
- * (`@deepseek-ai/dsh-storage` UNIT_NAME_RE). Hyphens are rejected, which is why
- * DOMAIN_NAME uses underscores.
- */
+import type { DomainLike, KvTableLike } from '../host.js';
+import { type GlobalState } from '../domain/records.js';
+/** The host rejects unit and table names that are not `snake_case`. */
 export declare const UNIT_NAME_PATTERN: RegExp;
-export declare function createDomainSpec(): DomainSpecLike;
 export declare const META_KEY = "global";
-export interface DomainTables {
-    tasks: {
-        get(key: string): TaskRecord | undefined;
-    };
-    runs: {
-        get(key: string): RunRecord | undefined;
-    };
-    steps: {
-        get(key: string): RunStepRecord | undefined;
-    };
-    meta: {
-        get(key: string): GlobalState | undefined;
-        put(key: string, value: GlobalState): Promise<void>;
-    };
-}
-export interface MigrationContext {
-    domain: DomainLike;
-    readMeta(): GlobalState | undefined;
-    writeMeta(state: GlobalState): Promise<void>;
-}
+export declare function createDomainSpec(): Record<string, unknown>;
 export interface Migration {
     id: string;
     description: string;
-    /** Must be safe to re-run: the ledger marker is written only after success. */
-    apply(context: MigrationContext): Promise<void>;
+    apply: (context: MigrationContext) => Promise<void>;
 }
+export interface MigrationContext {
+    domain: DomainLike;
+    now: () => Date;
+    table: <T>(name: string) => KvTableLike<T>;
+    log: (message: string) => void;
+}
+export declare function createMigrationContext(domain: DomainLike, now: () => Date, log: (message: string) => void): MigrationContext;
+export declare function readMeta(domain: DomainLike): GlobalState;
+export declare function writeMeta(domain: DomainLike, state: GlobalState): Promise<void>;
 /**
- * Ordered migrations. v1 has no historical shape to migrate; the runner is in
- * place so a future schema change is a data edit plus one entry here.
+ * Bring the stored records forward.
+ *
+ * Repeatable by construction: each migration writes its ledger entry after it
+ * succeeds, and the bodies are written so a second run finds nothing to do. A
+ * failing migration stops the boot instead of letting the engine write to a
+ * half-migrated domain.
  */
-export declare const MIGRATIONS: readonly Migration[];
-export declare function createMigrationContext(domain: DomainLike): MigrationContext;
-export interface MigrationReport {
+export declare function runMigrations(domain: DomainLike, migrations: readonly Migration[], now: () => Date, log?: (message: string) => void): Promise<{
     applied: string[];
-    alreadyApplied: string[];
-    schemaVersion: number;
+    skipped: string[];
+}>;
+export declare const MIGRATIONS: readonly Migration[];
+export interface IntegrityIssue {
+    kind: 'orphan-step' | 'missing-task' | 'missing-snapshot-step' | 'index-drift' | 'active-slot-drift' | 'idempotency-drift' | 'progress-drift' | 'expired-reservation';
+    severity: 'auto-fixable' | 'manual';
+    detail: string;
+    runId?: string;
+    stepId?: string;
+    taskId?: string;
 }
-/**
- * Apply pending migrations exactly once each. A failed migration throws: the
- * caller then refuses to open the domain for writes (PRD 7.4).
- */
-export declare function runMigrations(domain: DomainLike, migrations?: readonly Migration[], now?: () => string): Promise<MigrationReport>;
-export declare function readMeta(domain: DomainLike): GlobalState | undefined;
-export declare function writeMeta(domain: DomainLike, patch: Partial<GlobalState>): Promise<void>;
 export interface IntegrityReport {
     ok: boolean;
     runCount: number;
     stepCount: number;
     taskCount: number;
-    issues: string[];
+    issues: IntegrityIssue[];
 }
 /**
- * Startup verification (PRD 7.3): every run references an existing task and
- * every step belongs to an existing run with a stepId present in the run's
- * template snapshot. Issues are reported, never silently repaired.
+ * Read-only consistency check.
+ *
+ * It reports rather than repairs: the caller decides what may be fixed
+ * automatically (index rows, progress summaries) and what needs a human
+ * (a step whose run no longer exists).
  */
 export declare function verifyIntegrity(domain: DomainLike): IntegrityReport;
