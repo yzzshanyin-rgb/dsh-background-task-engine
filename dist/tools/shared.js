@@ -90,6 +90,8 @@ export const RUN_FIELDS = {
     summary: { type: 'string' },
     errorSummary: { type: 'string' },
     resumesRunId: { type: 'string' },
+    executionToken: { type: 'string' },
+    executionGeneration: { type: 'integer' },
     startedAt: { type: 'string' },
     finishedAt: { type: 'string' },
     duration: { type: 'string' },
@@ -155,6 +157,11 @@ export function runView(run, steps) {
         runId: run.runId,
         taskId: run.taskId,
         taskRevision: run.taskRevision,
+        // The token is the run's execution credential: the agent must pass it back
+        // on heartbeat / step report / finish so a resumed run cannot be driven by
+        // a stale caller. It is a handle, not a secret.
+        executionToken: run.executionToken,
+        executionGeneration: run.executionGeneration,
         status: run.status,
         triggerType: run.triggerType,
         sessionId: run.sessionId,

@@ -78,6 +78,8 @@ export interface RunLike {
         message: string;
     };
     resumesRunId?: string;
+    executionToken?: string;
+    executionGeneration?: number;
 }
 export declare function taskView(task: TaskLike): Record<string, unknown>;
 export declare function runView(run: RunLike, steps: RunStepRecord[]): Record<string, unknown>;

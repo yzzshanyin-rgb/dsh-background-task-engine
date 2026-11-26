@@ -123,6 +123,8 @@ export const RUN_FIELDS: Record<string, JsonSchemaNode> = {
   summary: { type: 'string' },
   errorSummary: { type: 'string' },
   resumesRunId: { type: 'string' },
+  executionToken: { type: 'string' },
+  executionGeneration: { type: 'integer' },
   startedAt: { type: 'string' },
   finishedAt: { type: 'string' },
   duration: { type: 'string' },
@@ -166,6 +168,8 @@ export interface RunLike {
   summary?: string
   error?: { code: string; message: string }
   resumesRunId?: string
+  executionToken?: string
+  executionGeneration?: number
 }
 
 function defectView(step: StepDefinition): Record<string, unknown> {
@@ -228,6 +232,11 @@ export function runView(run: RunLike, steps: RunStepRecord[]): Record<string, un
     runId: run.runId,
     taskId: run.taskId,
     taskRevision: run.taskRevision,
+    // The token is the run's execution credential: the agent must pass it back
+    // on heartbeat / step report / finish so a resumed run cannot be driven by
+    // a stale caller. It is a handle, not a secret.
+    executionToken: run.executionToken,
+    executionGeneration: run.executionGeneration,
     status: run.status,
     triggerType: run.triggerType,
     sessionId: run.sessionId,

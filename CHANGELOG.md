@@ -4,6 +4,21 @@ All notable changes to `dsh-background-task-engine` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] — 2026-11-26
+
+让执行凭证真的可用。
+
+### Fixed
+
+- `task_run` / `task_run_begin` / `task_run_history` 的返回里补上 `executionToken` 与
+  `executionGeneration`。1.2.0 虽然在服务端生成了凭证并逐次校验，却没有把凭证交给 Agent，
+  导致心跳与步骤汇报只能走「缺凭证放行并给 warning」的兼容分支。
+
+### Tests
+
+- 新增 2 项：启动运行时返回可用的 `exec_` 凭证与代际 1；心跳接受真实凭证、拒绝伪造凭证
+  （`TASK_RUN_INTERRUPTED`）。合计 146 项。
+
 ## [1.2.0] — 2026-11-26
 
 可靠性加固与任务管理界面。此版本不改变既有工具的参数语义，也不重建数据模型，

@@ -32,6 +32,28 @@ async function runStarted(harness: Harness, session = SESSION_A) {
   return { task, run, runId: String(run.runId), steps: run.steps as Array<Record<string, unknown>> }
 }
 
+describe('execution credentials', () => {
+  it('hands the agent an execution token for the run it just started', async () => {
+    const harness = createHarness()
+    const { run } = await runStarted(harness)
+    expect(typeof run.executionToken).toBe('string')
+    expect(String(run.executionToken).startsWith('exec_')).toBe(true)
+    expect(run.executionGeneration).toBe(1)
+  })
+
+  it('accepts the token on heartbeat and rejects a forged one', async () => {
+    const harness = createHarness()
+    const { runId } = await runStarted(harness)
+    const ok = expectOk(await harness.call('task_run_heartbeat', SESSION_A, { runId }))
+    expect(ok.accepted).toBe(true)
+    const forged = await harness.call('task_run_heartbeat', SESSION_A, {
+      runId,
+      executionToken: 'exec_forged_1_deadbeef',
+    })
+    expect(errorCode(forged)).toBe('TASK_RUN_INTERRUPTED')
+  })
+})
+
 describe('tool registration and startup', () => {
   it('registers all 14 task_* tools', () => {
     const harness = createHarness()
