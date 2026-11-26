@@ -150,8 +150,17 @@ are never pruned.
 
 ## Configuration
 
+All eight numbers are edited from the card at **Settings → Plugins → dsh-background-task-engine**;
+saving applies immediately, with no restart. The same keys can be written to the profile's
+`cordis.patch.yml` — both paths edit one configuration.
+
 Exported as `Config` (Schemastery) and validated again at load; out-of-range
 values fail the load rather than being clamped.
+
+> **Why a save takes effect immediately**: every field is declared volatile, so the host hands the
+> plugin a reference it updates in place and the plugin reads through it on each use. Volatile is
+> also what makes the card exist at all — `dsh-settings` only serves namespaces that carry at least
+> one volatile field, so an all-ordinary schema never gets a form on the Plugins page.
 
 | Key | Default | Range | Meaning |
 |---|---|---|---|
