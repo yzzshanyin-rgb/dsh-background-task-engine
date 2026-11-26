@@ -14,22 +14,33 @@ npm test               # vitest run
 
 | Suite | File | Tests | Result |
 |---|---|---|---|
-| Domain | `tests/domain/state.test.ts` | 18 | PASS |
+| Domain (state machine) | `tests/domain/state.test.ts` | 18 | PASS |
+| Domain (configuration) | `tests/domain/config.test.ts` | 7 | PASS |
 | Storage | `tests/storage/repository.test.ts` | 17 | PASS |
 | Rendering | `tests/tools/render.test.ts` | 13 | PASS |
-| Integration | `tests/integration/tools.test.ts` | 33 | PASS |
-| **Total** | 4 files | **81** | **all passing** |
+| Integration (tools) | `tests/integration/tools.test.ts` | 33 | PASS |
+| Integration (client bundle) | `tests/integration/client-bundle.test.ts` | 12 | PASS |
+| **Total** | 6 files | **100** | **all passing** |
 
 ```console
 $ npx vitest run
+ ✓ tests/integration/client-bundle.test.ts (12 tests)
+ ✓ tests/domain/config.test.ts (7 tests)
  ✓ tests/domain/state.test.ts (18 tests)
  ✓ tests/storage/repository.test.ts (17 tests)
  ✓ tests/tools/render.test.ts (13 tests)
  ✓ tests/integration/tools.test.ts (33 tests)
 
- Test Files  4 passed (4)
-      Tests  81 passed (81)
+ Test Files  6 passed (6)
+      Tests  100 passed (100)
 ```
+
+The client-bundle suite loads `client/client.js` with a `window.__ModuleLoader__`
+stub and a minimal React-hooks runtime, so the shipped browser half is executed
+rather than merely grepped: it asserts the slot name and key, the namespace it
+edits, the eight rendered inputs, that only changed fields are written at the
+observed revision, that an out-of-range value never reaches the host, and that
+an unserved namespace renders an explanation instead of a dead form.
 
 The integration suite drives the real plugin entry point (`apply()` →
 `ctx.tools.register`) through a fake StorageDomain whose semantics mirror the
@@ -53,6 +64,25 @@ Two scripts boot the **real** DSH packages out of the installed `app.asar`:
 | Resume after restart | new `runId`, `resumesRunId` set, 1 carried / 1 pending |
 
 Details and console output: `docs/API-COMPATIBILITY-AUDIT.md` §6.
+
+### Volatile-configuration check (1.1.x)
+
+`schemastery` turns every `volatile()` field into a reference object, and the
+services read through `ConfigRef.get()` on each use. Verified against the real
+host packages:
+
+```console
+$ ELECTRON_RUN_AS_NODE=1 "$DSH_NODE_EXECUTABLE" /tmp/real-host-volatile.mjs
+config field is a ref: true -> 3
+tools: 12
+4 steps under maxStepsPerTask=3 -> TASK_INVALID_STEPS
+3 steps -> true 3
+```
+
+The config was parsed by the shipped `Config` with `maxStepsPerTask: 3`; a
+four-step task was rejected at call time and a three-step task accepted, which
+only happens if the service reads the reference instead of a value captured at
+construction.
 
 ## Requirement coverage (PRD 14)
 
