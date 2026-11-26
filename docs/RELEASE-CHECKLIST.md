@@ -7,6 +7,7 @@
 | # | 门槛 | 状态 | 证据 |
 |---|---|---|---|
 | 1 | npm 包完整性与版本一致 | ✅ | `01-package.md`（72 文件、必含项齐全、无源码/测试泄漏） |
+| 0 | 冻结与发布动作 | ✅ | `00-baseline.md`（commit `55b23a1`、tag `v1.2.3`）、`09-postpublish.md` |
 | 2 | 目标 DSH 版本真实安装、14 工具注册 | ✅ | `03-host-install.md` |
 | 3 | StorageDomain 打开与 1.1.1 数据迁移 | ✅ | `06-migration.md` |
 | 4 | Schedule 真实投递到执行链路 | ⚠️ 部分 | `04-schedule.md`（真实规则创建/暂停/删除已验；真实投递需在会话中等待一次到期） |
