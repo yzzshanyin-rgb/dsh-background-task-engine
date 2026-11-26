@@ -81,6 +81,26 @@ Bugs 1–3 were only observable against the real host, which is why
 `docs/API-COMPATIBILITY-AUDIT.md` records the real-stack runs separately from the
 unit suite.
 
+## Post-publish verification (GitHub artifact)
+
+The committed `main` was cloned fresh and treated as an independent artifact:
+
+| Check | Result |
+|---|---|
+| `git clone` from `github.com:yzzshanyin-rgb/dsh-background-task-engine` | ok, commit `a01bdd6` |
+| Fresh `npm install && npm run build` | BUILD OK |
+| Rebuilt `dist/` vs committed `dist/` | identical (`git status` clean) |
+| `npm test` in the clone | **81 / 81 passing** |
+| `npm pack` tarball | 58 files, 81 KB |
+| Tarball contents | `dist/index.js`, `locale/{en,zh}.json`, `icon.svg`, `docs/DETAIL{,.zh}.md`, `docs/preview.svg`, `cordis.patch.yml` all present |
+| Tarball installed into a clean project | 12/12 tools register; `Config()` returns the documented defaults |
+| Clone installed into the real desktop profile | `application: applied`, no warnings |
+
+Two packaging details were confirmed while doing this: `@deepseek-ai/schemastery`
+must stay a regular dependency (every installed community plugin that defines a
+`Config` declares it the same way), and the shipped `dist/` is byte-identical to a
+fresh build, so the published artifact cannot drift from source.
+
 ## Test inventory
 
 Every assertion from the last full run is listed below.

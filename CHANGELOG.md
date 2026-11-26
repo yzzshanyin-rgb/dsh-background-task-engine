@@ -56,6 +56,15 @@ First release. Verified against DeepSeek Harness `0.2.2-rc.3`
   errors, security, upgrade and troubleshooting; API compatibility audit; test
   report.
 
+### Verification
+
+- 81 tests across domain, storage, rendering and integration suites.
+- Real-host runs against the installed DSH `0.2.2-rc.3` packages: mount, full
+  manual loop, restart persistence, stale-run recovery, resume.
+- The published artifact was re-verified from a fresh clone: rebuild is
+  byte-identical, tests pass, and the npm tarball installs and registers all 12
+  tools.
+
 ### Known limitations
 
 - Schedule delivery could not be exercised end-to-end in-process: the real
