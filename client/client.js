@@ -1147,6 +1147,11 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { className: 'dbte-head', style: { marginTop: '8px' } },
+          h(
+            'span',
+            { className: 'dbte-hint' },
+            '本机单用户模式：会话由当前页面提供，宿主不会为这些请求再验一次身份。',
+          ),
           h('span', { className: 'dbte-spacer' }),
           h('button', { className: 'dbte-btn', onClick: props.onClose }, '收起'),
         ),

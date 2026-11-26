@@ -24,14 +24,24 @@
 
 ## 安装
 
-要求：DSH **0.2.2-rc.3**（Node 运行时 22+；实际验证于 Node 24.13.0）或兼容版本，
-且已挂载 `ctx.storageDomain`（官方 base bundle 默认以 `storage-domain backend: json` 挂载）。
+### 支持范围
+
+| 项 | 声明 | 实测 |
+|---|---|---|
+| DSH | `engines.dsh: >=0.2.2-rc.3` | **仅 0.2.2-rc.3**（Desktop 版） |
+| Node | `engines.node: >=22` | 24.13.0 |
+| 存储 | 必须挂载 `ctx.storageDomain` | 官方 base bundle 的 `storage-domain backend: json` |
+| 调度 | 可选；未挂载时手动任务照常可用 | 同版本 Schedule |
+| 平台 | 桌面版（Web GUI 由宿主 `ctx.webServer` 提供） | macOS |
+
+比 0.2.2-rc.3 更新的宿主没有实测过：接口是公开 API，理论上兼容，但**未验证的版本不计入承诺范围**。
+每次升级宿主后，请跑一遍 `task_engine_status` 并看 `docs/TEST-REPORT.md` 的复验步骤。
 
 已验证的宿主接口（V1.2.0 基线，详见 `docs/API-COMPATIBILITY-AUDIT.md`）：
 `ctx.tools.register`、`ctx.storageDomain.open`、`ctx.schedule.create/edit/view/run`、`ctx.webServer.register`、插件配置表单（volatile）。
 
 ```sh
-# 从 npm 安装（已发布 1.0.2）
+# 从 npm 安装（当前版本 1.2.3）
 dsh plugin --profile <名称> add dsh-background-task-engine
 
 # 或从本地目录安装
@@ -242,12 +252,39 @@ TaskRun  queued → running → succeeded | failed | blocked | interrupted
 - **不可注入代码。** 任务参数无法携带 JavaScript、动态 import 或脚本；插件内不存在任何求值器。
 - 定时任务绑定创建时的会话，因此到期执行发生在拥有该任务的会话内。
 
+### 部署模型与已知边界
+
+**本插件按「本机单用户」设计。** 任务看板的数据来自宿主 `ctx.webServer` 的本地 HTTP 路由，
+而宿主对这些静态路由**不做逐请求认证**（认证层只覆盖 RPC 网关）。因此：
+
+- 路由只能从本机访问：宿主 `ctx.webServer` 拒绝绑定通配地址，只接受具体的本机接口。
+- **会话标识是数据选择器，不是已验证的身份。** 看板把当前页面所属会话传给服务端，
+  服务端据此过滤；它没有、也不能证明调用者「就是」该会话——任何本机进程都能构造同样的请求。
+- 因此**不要**把本插件部署成多人共享实例或公网可达服务；在那种部署下，本插件的看板路由
+  不构成访问隔离，隔离只保证在工具层（`task_*` 走 `exec.agent.session.id`，无法伪造）。
+- 看板面板底部与 `/status` 的 `deploymentModel`、`sessionVerified: false` 就是这个边界的
+  自我声明，不要把它当成已经解决的安全问题。
+
+若宿主将来为静态路由提供可信 Peer 身份，看板应改为从 Peer 推导会话，而不是采信 query。
+
+### 清理行为
+
+V1.2.3 的清理是**插件启动时执行的分批清理**（每批 200 条，只删超出 `historyRetentionDays`
+的终态运行及其步骤），不是常驻定时器，也不是周期性后台任务：宿主没有提供无副作用的后台
+定时原语，插件不自行造一个常驻 Worker。因此长时间不重启的进程里，过期记录会保留到下次启动。
+
 ## 升级
 
 1. 升级 bundle；插件行会保留其配置。
 2. 下次启动时，引擎打开 domain、比对已存 `meta.schemaVersion`，并逐条执行尚未应用的迁移，
    **只有迁移成功后**才写入台账标记。
 3. 若已存版本**高于**插件支持的版本，直接以 `TASK_STORAGE_ERROR` 拒绝——不允许静默降级。
+
+> **升级前请备份** `~/.dsh/storages/dsh_background_task_engine.json`（或你 profile 对应的
+> storage root 下的同名文件）。schema v2 的数据**不能**交给 1.1.x 读取：旧代码声明的单元版本
+> 是 1，打开 v2 文件会 `version-mismatch` 而拒绝启动。回退请用备份文件，不要手工改版本号。
+> 1.2.0/1.2.1 曾因为漏声明 `compatibleVersions: [1]` 而无法打开 1.1.x 的既有数据，
+> 1.2.2 起已修；从 1.1.x 直接升到当前版本是安全的。
 
 迁移都是可重复执行的（以 `meta.appliedMigrations` 为台账），V1.2.0 带来三条：
 
@@ -296,7 +333,7 @@ src/
   storage/spec.ts       domain 声明、迁移、完整性校验
   storage/repository.ts 唯一读写 domain 表的地方
   services/             审计、任务、运行、定时适配、引擎
-  tools/                12 个工具定义与共用管道
+  tools/                14 个工具定义与共用管道
   prompt/guidance.ts    执行协议与投递解析
 tests/                  domain、storage、渲染、集成（含假件）
 docs/                   宿主能力审计、测试报告、详情页

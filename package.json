@@ -1,6 +1,6 @@
 {
   "name": "dsh-background-task-engine",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "DeepSeek Harness 后台任务引擎：任务模板、线性步骤执行、持久化运行记录、心跳与恢复、定时关联与任务看板。",
   "keywords": [
     "deepseek-harness",
@@ -31,6 +31,7 @@
     "cordis.patch.yml",
     "locale/*.json",
     "docs",
+    "assets",
     "icon.svg",
     "screenshots.json",
     "README.md",
@@ -70,7 +71,8 @@
     "@deepseek-ai/schemastery": "^3.18.5"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22",
+    "dsh": ">=0.2.2-rc.3"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

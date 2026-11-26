@@ -76,6 +76,11 @@ function statusRoute(engine: () => TaskEngine) {
         integrityStatus: diagnostics.integrityStatus,
         lastRecoveryScanAt: diagnostics.lastRecoveryScanAt ?? null,
         unsettledScheduleOps: diagnostics.unsettledScheduleOps,
+        // The board routes are served by the host's local web server, which has no
+        // per-request authentication: the session below is a data selector, not a
+        // verified identity. Saying so in the payload keeps the UI honest.
+        deploymentModel: 'local-single-user',
+        sessionVerified: false,
       }
     })
   }
@@ -309,9 +314,20 @@ function query(req: any): URLSearchParams {
   return url.searchParams
 }
 
+/** Session ids the host mints are opaque tokens; anything else is a bad request. */
+const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{6,128}$/
+
 function requireSession(value: string | null | undefined): string {
-  if (typeof value !== 'string' || value.length < 4) {
+  if (typeof value !== 'string' || value.length === 0) {
     throw new TaskEngineError('TASK_PERMISSION_DENIED', '无法识别当前会话：请从 DSH 页面打开看板')
+  }
+  // SEC-05: a malformed selector must be rejected, not turned into a loose query
+  // that could match an unintended owner.
+  if (!SESSION_ID_PATTERN.test(value)) {
+    throw new TaskEngineError(
+      'TASK_INVALID_ARGUMENTS',
+      '会话标识格式不合法：只接受宿主生成的字母数字标识',
+    )
   }
   return value
 }

@@ -7,6 +7,7 @@
  * working (PRD FR-012).
  */
 import { z } from 'zod';
+import { TaskEngineError } from '../errors.js';
 import { buildTool, out, renderGeneric, taskView, TASK_FIELDS, isFailure } from './shared.js';
 import { oneLine } from '../utils/text.js';
 const TIMING_SCHEMA = {
@@ -132,12 +133,9 @@ export function createScheduleTool(engine) {
             const action = String(args.action);
             const timing = args.timing;
             if (action !== 'status' && !active.scheduleAdapter.available) {
-                return {
-                    action,
-                    scheduleAvailable: false,
-                    note: '当前宿主未挂载 ctx.schedule，定时功能不可用；请用 task_run 手动执行任务，或在启用 Schedule 后重试。',
-                    ...(await safeTask(active, sessionId, taskId)),
-                };
+                // Fail loudly: a soft "success" would let the agent tell the user a
+                // schedule exists when the host has no Schedule service at all.
+                throw new TaskEngineError('TASK_SCHEDULE_UNAVAILABLE', '当前宿主未挂载 ctx.schedule，定时功能不可用；请用 task_run 手动执行任务，或在启用 Schedule 后重试。');
             }
             switch (action) {
                 case 'create': {

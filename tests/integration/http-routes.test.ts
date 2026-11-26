@@ -137,6 +137,23 @@ describe('board routes', () => {
     await engine.dispose()
   })
 
+  it('rejects a malformed session selector instead of querying loosely', async () => {
+    const { routes, engine } = await build()
+    for (const bad of ['a', 'has space', 'sess/../etc', 'x'.repeat(200)]) {
+      const reply = await call(routes, `/tasks?session=${encodeURIComponent(bad)}`)
+      expect(reply.status).toBe(400)
+      expect((reply.body.error as { code: string }).code).toBe('TASK_INVALID_ARGUMENTS')
+    }
+    await engine.dispose()
+  })
+
+  it('states the deployment model instead of implying authenticated sessions', async () => {
+    const { routes, engine } = await build()
+    const reply = await call(routes, `/status?session=${SESSION_A}`)
+    expect(reply.body).toMatchObject({ deploymentModel: 'local-single-user', sessionVerified: false })
+    await engine.dispose()
+  })
+
   it('hides another session task behind the same not-found answer', async () => {
     const { routes, engine, taskId } = await build()
     const reply = await call(routes, `/task?session=${SESSION_B}&taskId=${taskId}`)

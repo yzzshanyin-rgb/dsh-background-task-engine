@@ -4,6 +4,33 @@ All notable changes to `dsh-background-task-engine` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-11-26
+
+发布就绪补丁（按《插件市场发布执行手册》逐项核对后的修复，无业务行为变更）。
+
+### Added
+
+- `assets/preview-1280.png` 与 `screenshots.json`：市场详情页截图（1280×600 PNG）。
+- README 新增「支持范围」表（DSH / Node / 存储 / 调度 / 平台，声明值与实测值分列）、
+  「部署模型与已知边界」（本机单用户、看板路由无逐请求认证、会话标识不是身份）、
+  「清理行为」（启动时分批清理，非常驻定时器）、升级前备份与 schema v2 不可回退说明。
+- 看板面板底部显示部署模型提示；`/status` 返回 `deploymentModel: 'local-single-user'` 与
+  `sessionVerified: false`，把安全边界显式化而不是留给读者猜。
+
+### Fixed
+
+- `package-lock.json` 根包版本停留在 1.0.3 → 同步到 1.2.3。
+- `files` 白名单缺少 `assets`，导致 `assets/icon-180.png` 与预览图不进 tarball；
+  市场条目的图标指向该文件，缺它会让详情页图标 404。
+- `files` 声明了 `screenshots.json` 但仓库没有该文件。
+- `engines` 缺 `dsh`，且 `node` 写 `>=20` 与 README 的「Node 22+」不一致。
+
+### Security
+
+- 看板路由的 `session` 参数改为强校验（长度、字符集、前缀），畸形值返回
+  `TASK_INVALID_ARGUMENTS`（400）而不是退化成宽松查询。
+- 明确记录：宿主对静态路由不做认证，因此本插件不宣称支持多人共享或公网部署。
+
 ## [1.2.2] — 2026-11-26
 
 修一个会让升级后插件直接起不来的问题。

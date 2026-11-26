@@ -480,9 +480,14 @@ describe('schedule linkage (PRD 14.3)', () => {
       action: 'create',
       timing: { kind: 'every', everySeconds: 600 },
     })
-    expect(unavailable.success).toBe(true)
-    expect(unavailable.scheduleAvailable).toBe(false)
-    expect(String(unavailable.note)).toContain('未挂载')
+    // A soft success would let the agent claim a schedule exists; the host has no
+    // Schedule service at all, so this must be a stable, retryable-looking error.
+    expect(unavailable.success).toBe(false)
+    expect(errorCode(unavailable)).toBe('TASK_SCHEDULE_UNAVAILABLE')
+    expect(String(unavailable.error.message)).toContain('未挂载')
+    // The status view still works and explains the degraded mode.
+    const view = expectOk(await withoutSchedule.call('task_schedule', SESSION_A, { taskId: task.taskId, action: 'status' }))
+    expect(view.scheduleAvailable).toBe(false)
 
     const run = expectOk(await withoutSchedule.call('task_run', SESSION_A, { taskId: task.taskId }))
     expect(run.status).toBe('running')

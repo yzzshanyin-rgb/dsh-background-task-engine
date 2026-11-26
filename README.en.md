@@ -27,12 +27,22 @@ backend — it composes the Host's own `ctx.schedule`, `ctx.storageDomain` and
 
 ## Install
 
-Requirements: DSH **0.2.2-rc.3** or a compatible release with
-`ctx.storageDomain` mounted (the stock base bundle does this with
-`storage-domain backend: json`).
+### Supported range
+
+| Item | Declared | Verified |
+|---|---|---|
+| DSH | `engines.dsh: >=0.2.2-rc.3` | **0.2.2-rc.3 only** (desktop) |
+| Node | `engines.node: >=22` | 24.13.0 |
+| Storage | `ctx.storageDomain` must be mounted | stock base bundle, `storage-domain backend: json` |
+| Schedule | optional; manual runs work without it | same version |
+| Platform | desktop app (the board uses the host `ctx.webServer`) | macOS |
+
+Newer hosts are untested: the plugin only uses public APIs, but **untested versions are not
+covered by the promise**. After a host upgrade, run `task_engine_status` and follow the
+re-verification steps in `docs/TEST-REPORT.md`.
 
 ```sh
-# from npm (published 1.0.2)
+# from npm (current: 1.2.3)
 dsh plugin --profile <name> add dsh-background-task-engine
 
 # or from a local checkout
@@ -215,6 +225,34 @@ unexpected failure is never reported as a misleading PRD code.
 - Scheduling is bound to the creating Session, so a scheduled run executes in the
   Session that owns the task.
 
+### Deployment model and known boundary
+
+**This plugin is designed for a single local user.** The board reads tasks through local
+HTTP routes on the host `ctx.webServer`, and the host does **not** authenticate those static
+routes per request (its authentication layer covers only the RPC gateway). Therefore:
+
+- The routes are reachable from this machine only: `ctx.webServer` refuses to bind a wildcard
+  address and accepts one concrete local interface.
+- **The Session id is a data selector, not a verified identity.** The board passes the Session
+  of the page it runs in and the server filters by it; the server neither has nor proves that
+  the caller *is* that Session — any local process can build the same request.
+- So **do not** deploy this plugin as a shared multi-user instance or expose it publicly. In such
+  a deployment the board routes provide no access isolation; isolation is enforced at the tool
+  layer only (`task_*` resolve the Session from `exec.agent.session.id`, which cannot be forged).
+- The hint at the bottom of the board panel and `deploymentModel` / `sessionVerified: false` in
+  `/status` are this boundary declaring itself — not a security problem that has been solved.
+
+If a future host supplies a trustworthy peer identity for static routes, the board should derive
+the Session from it instead of trusting a query parameter.
+
+### Cleanup behaviour
+
+Cleanup is a **batched prune performed at plugin startup** (200 runs per batch, terminal runs
+older than `historyRetentionDays` and their step rows). It is not a resident timer and not a
+periodic background job: the host offers no side-effect-free background scheduling primitive and
+the plugin does not build a resident worker. A long-lived process therefore keeps expired records
+until its next start.
+
 ## Upgrade
 
 1. Bump the bundle; the plugin row keeps its config.
@@ -224,8 +262,13 @@ unexpected failure is never reported as a misleading PRD code.
 3. A stored version **higher** than the plugin supports is refused with
    `TASK_STORAGE_ERROR` — downgrading is not silently allowed.
 
-v1.0.0 ships an empty migration set (the baseline shape needs none); the runner
+the 1.0 baseline shipped an empty migration set; the runner
 and ledger exist so a future shape change is a data edit plus one entry.
+
+> **Back up** `~/.dsh/storages/dsh_background_task_engine.json` (or the same file under your
+> profile's storage root) before upgrading. schema v2 data **cannot** be handed to 1.1.x: the old
+> code declares unit version 1 and refuses a v2 file with `version-mismatch` at startup. To roll
+> back, restore the backup — do not hand-edit the version number.
 
 ## Troubleshooting
 

@@ -1,0 +1,11 @@
+{
+  "screenshots": [
+    {
+      "path": "assets/preview-1280.png",
+      "caption": {
+        "zh": "任务模板、运行账本与步骤进度",
+        "en": "Task template, run ledger and step progress"
+      }
+    }
+  ]
+}

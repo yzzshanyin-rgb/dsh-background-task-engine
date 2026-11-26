@@ -1,7 +1,8 @@
 # Test Report
 
-Verification record for `dsh-background-task-engine` 1.2.0 against the V1.2.0
-acceptance matrix (章节 14 与 V1.2.0 §2–§7 验收项).
+Verification record for `dsh-background-task-engine` **1.2.3** against the V1.2.0
+acceptance matrix (章节 14 与 V1.2.0 §2–§7 验收项), plus the release gates of the
+V1.2.2 市场发布执行手册 (see `docs/RELEASE-CHECKLIST.md` and `release-evidence/v1.2.3/`).
 
 ## How to reproduce
 
@@ -22,9 +23,9 @@ npm test               # vitest run
 | Rendering | `tests/tools/render.test.ts` | 13 | PASS |
 | Integration (tools) | `tests/integration/tools.test.ts` | 35 | PASS |
 | Integration (reliability) | `tests/integration/reliability.test.ts` | 14 | PASS |
-| Integration (board routes) | `tests/integration/http-routes.test.ts` | 8 | PASS |
+| Integration (board routes) | `tests/integration/http-routes.test.ts` | 10 | PASS |
 | Integration (client bundle) | `tests/integration/client-bundle.test.ts` | 17 | PASS |
-| **Total** | 9 files | **147** | **all passing** |
+| **Total** | 9 files | **149** | **all passing** |
 
 ```console
 $ npx vitest run
@@ -32,13 +33,48 @@ $ npx vitest run
  ✓ tests/integration/client-bundle.test.ts (17 tests) 137ms
  ✓ tests/storage/repository.test.ts (18 tests) 16ms
  ✓ tests/services/schedule-time.test.ts (13 tests) 28ms
- ✓ tests/integration/http-routes.test.ts (8 tests) 33ms
+ ✓ tests/integration/http-routes.test.ts (10 tests) 33ms
  ✓ tests/integration/reliability.test.ts (14 tests) 53ms
  ✓ tests/tools/render.test.ts (13 tests) 63ms
  ✓ tests/integration/tools.test.ts (35 tests) 146ms
  ✓ tests/domain/config.test.ts (7 tests) 5ms
-      Tests  147 passed (147)
+      Tests  149 passed (149)
 ```
+
+## Release gates (V1.2.3)
+
+| 门槛 | 结果 | 证据 |
+|---|---|---|
+| 包完整性（72 文件、必含项齐全、无源码/测试入包） | PASS | `release-evidence/v1.2.3/01-package.md` |
+| 干净克隆 `npm ci` → build → typecheck → test | PASS（149） | `release-evidence/v1.2.3/02-build-tests.md` |
+| 真实宿主安装、14 工具、任务→心跳→步骤→收尾 | PASS | `release-evidence/v1.2.3/03-host-install.md` |
+| StorageDomain 打开 + v1→v2 迁移 + 重复启动幂等 | PASS | `release-evidence/v1.2.3/06-migration.md` |
+| 看板路由安全边界（SEC-01..06） | 已逐条记录，SEC-03 为设计限制 | `release-evidence/v1.2.3/05-security.md` |
+| Schedule 真实到期投递 | **未验证**（见 04-schedule.md） | `release-evidence/v1.2.3/04-schedule.md` |
+
+### Board route security matrix
+
+宿主不为静态路由提供 per-request 身份（认证只覆盖 RPC 网关），`ctx.webServer` 也拒绝绑定
+通配地址。因此插件在文档与 UI 里声明「本机单用户」，并由以下测试固定行为：
+
+| 用例 | 断言 | 位置 |
+|---|---|---|
+| SEC-01 | 缺 `session` → 403 `TASK_PERMISSION_DENIED` | http-routes |
+| SEC-02 | 列表只含本 session 任务，另一 session 为空 | http-routes |
+| SEC-04 | 用他人 taskId → 404 `TASK_NOT_FOUND`（与不存在同形） | http-routes |
+| SEC-05 | 畸形/超长/路径样式 session → 400 `TASK_INVALID_ARGUMENTS` | http-routes |
+| SEC-06 | 写操作只认 `session` 选择器，owner 由服务端推出 | http-routes + tools |
+| 部署模型 | `/status` 返回 `deploymentModel: 'local-single-user'`、`sessionVerified: false` | http-routes |
+
+### Behaviour change in 1.2.3
+
+`task_schedule(create|update|pause|resume|delete|run_now)` 在宿主未挂载 `ctx.schedule` 时，
+原先返回 `success: true` + `scheduleAvailable: false`，现在返回 **`success: false` +
+`TASK_SCHEDULE_UNAVAILABLE`**。理由：软成功会让 Agent 向用户宣称“定时已设置”，而宿主根本
+没有 Schedule 服务。`action: 'status'` 仍返回 `scheduleAvailable: false` 供诊断。
+
+`task_engine_status` 的 `taskCount` / `runCount` 改为**按调用者 session 实时统计**（不再使用
+启动时缓存），避免“存储里明明有数据，诊断却说 0”。
 
 ## V1.2.0 acceptance matrix
 

@@ -219,13 +219,18 @@ export class TaskEngine {
     if (!this.repo) {
       return { ...this.diagnostics, activeRunCount: 0, blockedRunCount: 0, interruptedRunCount: 0 }
     }
+    // Counts are derived from persisted rows on every call: a cached counter would
+    // report a healthy engine while the store says otherwise (PRD module 5).
     const runs = this.repo.listRunsByOwner(sessionId)
     const activeRunCount = runs.filter((run) => run.status === 'queued' || run.status === 'running').length
     const blockedRunCount = runs.filter((run) => run.status === 'blocked').length
     const interruptedRunCount = runs.filter((run) => run.status === 'interrupted').length
     const unsettled = this.repo.listUnsettledScheduleOps().filter((op) => op.ownerSessionId === sessionId).length
+    const taskCount = this.repo.listTasksByOwner(sessionId).filter((task) => task.status !== 'archived').length
     return {
       ...this.diagnostics,
+      taskCount,
+      runCount: runs.length,
       activeRunCount,
       blockedRunCount,
       interruptedRunCount,
