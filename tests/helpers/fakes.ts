@@ -7,7 +7,7 @@
  * simplified map, so tests actually exercise the repository contracts.
  */
 
-import type { DomainLike, KvTableLike, ScheduleRecordLike, ScheduleServiceLike } from '../src/host.js'
+import type { DomainLike, KvTableLike, ScheduleRecordLike, ScheduleServiceLike } from '../../src/host.js'
 
 export interface FakeTableValue {
   schema?: { parse(value: unknown): unknown }

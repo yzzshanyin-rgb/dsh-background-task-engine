@@ -29,12 +29,14 @@ export class RunService {
     config;
     audit;
     now;
+    ownerLock;
     lock = new KeyedMutex();
-    constructor(repo, config, audit, now) {
+    constructor(repo, config, audit, now, ownerLock = new KeyedMutex()) {
         this.repo = repo;
         this.config = config;
         this.audit = audit;
         this.now = now;
+        this.ownerLock = ownerLock;
     }
     // -------------------------------------------------------------------------
     // Creation
@@ -56,11 +58,9 @@ export class RunService {
         const triggerType = input.triggerType ?? (trigger.scheduleId !== undefined ? 'schedule' : 'manual');
         const scheduleId = input.scheduleId ?? trigger.scheduleId;
         const occurrenceKey = input.occurrenceKey ?? trigger.occurrenceKey;
-        const task = this.repo.requireOwnedTask(taskId, input.sessionId);
         const idempotencyKey = this.idempotencyKeyFor({ scheduleId, occurrenceKey, manualRunId: input.manualRunId, idempotencyKey: input.idempotencyKey });
-        // Everything from here to the committed run is one critical section per
-        // (owner, task): two concurrent triggers cannot both pass the checks.
-        return this.lock.runExclusive(`start:${task.ownerSessionId}:${task.taskId}`, async () => {
+        // Check and reserve capacity across every task owned by this session.
+        return this.ownerLock.runExclusive(input.sessionId, async () => {
             const currentTask = this.repo.requireOwnedTask(taskId, input.sessionId);
             if (idempotencyKey !== undefined) {
                 const existing = this.repo.getIdempotency(currentTask.taskId, idempotencyKey);
@@ -146,16 +146,16 @@ export class RunService {
             try {
                 await this.repo.putSteps(steps);
                 await this.repo.insertRun(run);
+                if (occupiesSlot(run.status))
+                    await this.repo.addActiveRun(run);
+                await this.repo.putRunIndex(run);
+                if (idempotencyKey !== undefined)
+                    await this.repo.commitIdempotency(run.taskId, idempotencyKey, runId);
             }
             catch (error) {
-                await this.rollbackCreation(run, idempotencyKey, currentTask.taskId);
+                await this.rollbackCreation(run);
                 throw error;
             }
-            if (idempotencyKey !== undefined)
-                await this.repo.commitIdempotency(currentTask.taskId, idempotencyKey, runId);
-            if (occupiesSlot(run.status))
-                await this.repo.addActiveRun(run);
-            await this.repo.putRunIndex(run);
             this.audit.record({
                 name: 'task.run.started',
                 taskId: run.taskId,
@@ -170,6 +170,9 @@ export class RunService {
     async begin(input) {
         return this.lock.runExclusive(`run:${input.runId}`, async () => {
             const current = this.repo.requireOwnedRun(input.runId, input.sessionId);
+            if (!ACTIVE_RUN_STATUSES.includes(current.status)) {
+                throw new TaskEngineError('TASK_RUN_ALREADY_FINISHED', `运行 ${current.runId} 当前为 ${current.status}，不能开始。`);
+            }
             this.assertToken(current, input.executionToken);
             const steps = this.repo.listSteps(current.runId);
             const first = firstPendingStep(steps);
@@ -186,6 +189,8 @@ export class RunService {
             });
             if (next.status === 'running')
                 await this.repo.refreshActiveRunLease(next.runId, next.leaseExpiresAt);
+            if (current.status !== next.status)
+                await this.repo.putRunIndex(next);
             return { run: next, steps: this.repo.listSteps(next.runId), deduplicated: false };
         });
     }
@@ -288,6 +293,9 @@ export class RunService {
                 leaseExpiresAt: this.leaseFrom(at),
                 staleDetectedAt: undefined,
             });
+            if (current.status !== run.status)
+                await this.repo.putRunIndex(run);
+            await this.repo.refreshActiveRunLease(run.runId, run.leaseExpiresAt);
             return { run, step: this.repo.getStep(current.runId, input.stepId) ?? target, steps: after };
         });
     }
@@ -370,11 +378,12 @@ export class RunService {
         if (!RESUMABLE_RUN_STATUSES.includes(source.status)) {
             throw new TaskEngineError('TASK_INVALID_ARGUMENTS', `运行 ${source.runId} 的状态为 ${source.status}，只有 ${RESUMABLE_RUN_STATUSES.join('/')} 可以恢复。`);
         }
-        return this.lock.runExclusive(`start:${source.taskOwnerSessionId}:${source.taskId}`, async () => {
+        return this.ownerLock.runExclusive(input.sessionId, async () => {
             const task = this.repo.requireOwnedTask(source.taskId, input.sessionId);
-            if (task.status === 'archived') {
-                throw new TaskEngineError('TASK_PERMISSION_DENIED', '任务已归档，不能恢复运行。');
+            if (task.status !== 'active') {
+                throw new TaskEngineError('TASK_PERMISSION_DENIED', '任务已暂停或归档，不能恢复运行。');
             }
+            this.repo.requireOwnedRun(source.runId, input.sessionId);
             const sourceSteps = this.repo.listSteps(source.runId);
             const failed = failedSteps(sourceSteps);
             const risky = failed.filter((step) => (step.retryPolicy ?? DEFAULT_RETRY_POLICY) !== 'safe_retry');
@@ -444,10 +453,16 @@ export class RunService {
                     confirmationNote: truncateText(input.note ?? input.confirmation, 2000),
                 },
             };
-            await this.repo.putSteps(steps);
-            await this.repo.insertRun(run);
-            await this.repo.addActiveRun(run);
-            await this.repo.putRunIndex(run);
+            try {
+                await this.repo.putSteps(steps);
+                await this.repo.insertRun(run);
+                await this.repo.addActiveRun(run);
+                await this.repo.putRunIndex(run);
+            }
+            catch (error) {
+                await this.rollbackCreation(run);
+                throw error;
+            }
             this.audit.record({
                 name: 'task.run.resumed', taskId: run.taskId, runId: run.runId,
                 sessionId: input.sessionId, from: source.runId, to: run.status,
@@ -698,12 +713,14 @@ export class RunService {
             updatedAt: at,
         }));
     }
-    async rollbackCreation(run, idempotencyKey, taskId) {
-        if (idempotencyKey !== undefined)
-            await this.repo.releaseIdempotency(taskId, idempotencyKey).catch(() => undefined);
-        await this.repo.deleteSteps(run.runId).catch(() => undefined);
-        await this.repo.runs.delete(run.runId).catch(() => undefined);
+    async rollbackCreation(run) {
+        await this.repo.deleteRunIndex(run).catch(() => undefined);
         await this.repo.removeActiveRun(run.runId).catch(() => undefined);
+        await this.repo.runs.delete(run.runId).catch(() => undefined);
+        await this.repo.deleteSteps(run.runId).catch(() => undefined);
+        if (run.idempotencyKey !== undefined) {
+            await this.repo.releaseIdempotency(run.taskId, run.idempotencyKey).catch(() => undefined);
+        }
     }
     /** Recompute the run's cached summary from the step rows after a step write. */
     async syncRunSummary(runId, steps, liveness) {

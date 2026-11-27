@@ -5,7 +5,7 @@
  * data and stable cursors.
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { createHarness, SESSION_A, SESSION_B, expectOk, errorCode, THREE_STEPS, type Harness } from '../helpers/harness.js'
 import { FakeDomain, FakeDomainFacility, FakeSchedule } from '../helpers/fakes.js'
@@ -240,50 +240,47 @@ describe('run summary repair (PRD §2.3)', () => {
 })
 
 describe('schedule journal (PRD §4)', () => {
-  it('records a failed create and lets reconciliation adopt the orphan rule', async () => {
-    const schedule = new FakeSchedule()
-    const { engine } = (() => {
-      const facility = new FakeDomainFacility()
-      const built = new TaskEngine(
-        {
-          storageDomain: facility,
-          schedule,
-          emit: () => undefined,
-          logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
-          inject: () => undefined,
-          effect: () => undefined,
-        },
-        configRefs(),
-        () => new Date().toISOString(),
-      )
-      return { engine: built, domain: facility.domain! }
-    })()
+  it('reconciles a host rule when the task write failed after creation', async () => {
+    const { engine } = buildEngine()
     await engine.ready
     const task = await engine.taskService.create({ sessionId: SESSION_A, title: '定时巡检', steps: threeSteps() })
+    vi.spyOn(engine.repository, 'mutateTask').mockRejectedValueOnce(new Error('本地写入失败'))
 
-    // The host creates the rule, then the local write fails: the operation must
-    // survive as a failure, not as a silent success.
-    const adapter = engine.scheduleAdapter
-    const originalUpdate = adapter.update.bind(adapter)
-    ;(adapter as unknown as { update: typeof adapter.update }).update = async () => {
-      throw new Error('本地写入失败')
-    }
-    const created = await engine.taskService.scheduleCreate({
-      sessionId: SESSION_A, taskId: task.taskId, timing: { kind: 'every', everySeconds: 3600 },
-    })
-    expect(created.scheduleRef).toBeDefined()
-    ;(adapter as unknown as { update: typeof originalUpdate }).update = originalUpdate
+    const input = { sessionId: SESSION_A, taskId: task.taskId, timing: { kind: 'every' as const, everySeconds: 3600 } }
+    await expect(engine.taskService.scheduleCreate(input)).rejects.toThrow('本地写入失败')
+    await expect(engine.taskService.scheduleCreate(input)).rejects.toMatchObject({ code: 'TASK_SCHEDULE_FAILED' })
+    expect(engine.taskService.scheduleOperations(SESSION_A, task.taskId)[0]?.status).toBe('failed')
+    expect(engine.repository.getTask(task.taskId)?.scheduleRef).toBeUndefined()
 
-    // The journal shows the intent even though the local task row was rolled back.
-    const ops = engine.taskService.scheduleOperations(SESSION_A, task.taskId)
-    expect(ops.length).toBeGreaterThan(0)
-    expect(['failed', 'reconciling', 'succeeded']).toContain(ops[0]!.status)
+    await expect(engine.taskService.reconcileSchedules()).resolves.toMatchObject({ checked: 1, settled: 1 })
+    expect(engine.repository.getTask(task.taskId)?.scheduleRef).toMatchObject({ timingKind: 'every' })
+  })
 
-    const reconciled = await engine.taskService.reconcileSchedules()
-    expect(reconciled.checked).toBeGreaterThanOrEqual(0)
-    // Reconciliation never invents or duplicates rules.
-    const hosts = await schedule.list({})
-    expect(hosts.items.length).toBeLessThanOrEqual(1)
+  it('keeps a delete pending until the host removes the rule and the local reference is cleared', async () => {
+    const { engine } = buildEngine()
+    await engine.ready
+    const task = await engine.taskService.create({ sessionId: SESSION_A, title: '定时巡检', steps: threeSteps() })
+    const input = { sessionId: SESSION_A, taskId: task.taskId }
+    await engine.taskService.scheduleCreate({ ...input, timing: { kind: 'every', everySeconds: 3600 } })
+    vi.spyOn(engine.scheduleAdapter, 'remove').mockRejectedValueOnce(new Error('宿主暂时不可用'))
+      .mockRejectedValueOnce(new Error('宿主仍不可用'))
+
+    await expect(engine.taskService.scheduleDelete(input)).rejects.toThrow('宿主暂时不可用')
+    await expect(engine.taskService.reconcileSchedules()).resolves.toMatchObject({ settled: 0, ambiguous: 1 })
+    expect(engine.repository.getTask(task.taskId)?.scheduleRef).toBeDefined()
+    await expect(engine.taskService.reconcileSchedules()).resolves.toMatchObject({ settled: 1, ambiguous: 0 })
+    expect(engine.repository.getTask(task.taskId)?.scheduleRef).toBeUndefined()
+  })
+
+  it('creates just one host rule when requests overlap', async () => {
+    const { engine } = buildEngine()
+    await engine.ready
+    const task = await engine.taskService.create({ sessionId: SESSION_A, title: '定时巡检', steps: threeSteps() })
+    const create = vi.spyOn(engine.scheduleAdapter, 'create')
+    const input = { sessionId: SESSION_A, taskId: task.taskId, timing: { kind: 'every' as const, everySeconds: 3600 } }
+    const results = await Promise.allSettled([engine.taskService.scheduleCreate(input), engine.taskService.scheduleCreate(input)])
+    expect(results.map((result) => result.status)).toEqual(['fulfilled', 'rejected'])
+    expect(create).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -436,5 +433,62 @@ describe('tool surface still respects isolation', () => {
     expect(status.activeRunCount).toBe(0)
     expect(status.taskCount).toBe(0)
     expect(errorCode(await harness.call('task_get', SESSION_B, { taskId: task.taskId }))).toBe('TASK_NOT_FOUND')
+  })
+})
+
+
+describe('run and task consistency', () => {
+  it('enforces the owner limit across simultaneous starts for different tasks', async () => {
+    const { engine } = buildEngine({ maxActiveRunsPerOwner: 1 })
+    await engine.ready
+    const tasks = await Promise.all(['任务甲', '任务乙'].map((title) =>
+      engine.taskService.create({ sessionId: SESSION_A, title, steps: threeSteps() }),
+    ))
+    const starts = await Promise.allSettled(tasks.map(({ taskId }) =>
+      engine.runService.start({ sessionId: SESSION_A, taskId }),
+    ))
+    expect(starts[0]?.status).toBe('fulfilled')
+    expect(starts[1]).toMatchObject({ status: 'rejected', reason: { code: 'TASK_MAX_CONCURRENCY' } })
+    expect(engine.repository.listActiveRuns()).toHaveLength(1)
+  })
+
+  it('rolls back a failed history-index write and allows retry with the same key', async () => {
+    const { engine } = buildEngine()
+    await engine.ready
+    const task = await engine.taskService.create({ sessionId: SESSION_A, title: '索引巡检', steps: threeSteps() })
+    const input = { sessionId: SESSION_A, taskId: task.taskId, manualRunId: 'retry' }
+    vi.spyOn(engine.repository, 'putRunIndex').mockRejectedValueOnce(new Error('索引写入失败'))
+    await expect(engine.runService.start(input)).rejects.toThrow('索引写入失败')
+    expect(engine.repository.listRuns()).toHaveLength(0)
+    expect(engine.repository.listActiveRuns()).toHaveLength(0)
+    expect([...engine.repository.steps.entries()]).toHaveLength(0)
+    await expect(engine.runService.start(input)).resolves.toMatchObject({ deduplicated: false })
+  })
+
+  it('filters history by the stored run state even when an older index is stale', async () => {
+    const { engine } = buildEngine()
+    await engine.ready
+    const task = await engine.taskService.create({ sessionId: SESSION_A, title: '历史巡检', steps: threeSteps() })
+    const input = { sessionId: SESSION_A, taskId: task.taskId }
+    const { run } = await engine.runService.start({ ...input, defer: true })
+    await engine.runService.begin({ sessionId: SESSION_A, runId: run.runId })
+    expect([...engine.repository.runIndex.entries()][0]?.[1].status).toBe('running')
+    await engine.repository.putRunIndex(run)
+    expect(engine.runService.history({ ...input, status: 'queued' }).rows).toHaveLength(0)
+    expect(engine.runService.history({ ...input, status: 'running' }).rows).toMatchObject([{ runId: run.runId }])
+  })
+
+  it('returns the newest five runs and ignores malformed task-list cursors', async () => {
+    const { engine } = buildEngine()
+    await engine.ready
+    const task = await engine.taskService.create({ sessionId: SESSION_A, title: '历史巡检', steps: threeSteps() })
+    for (let index = 0; index < 6; index += 1) {
+      const { run } = await engine.runService.start({ sessionId: SESSION_A, taskId: task.taskId, defer: true })
+      await engine.runService.finish({ sessionId: SESSION_A, runId: run.runId, status: 'skipped' })
+    }
+    const expected = engine.runService.history({ sessionId: SESSION_A, taskId: task.taskId, limit: 5 }).rows
+    expect(engine.taskService.get(SESSION_A, task.taskId).recentRuns.map(({ runId }) => runId)).toEqual(expected.map(({ runId }) => runId))
+    const cursor = Buffer.from('{}').toString('base64url')
+    expect(engine.taskService.list({ sessionId: SESSION_A, cursor }).items).toMatchObject([{ taskId: task.taskId }])
   })
 })

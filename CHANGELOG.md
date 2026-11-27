@@ -4,6 +4,39 @@ All notable changes to `dsh-background-task-engine` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.4] - 2026-11-27
+
+并发与定时一致性的加固补丁：把「检查 → 占位 → 落库」真正收进同一临界区，
+并让定时操作只有在宿主规则与本地关联都被核验后才算成功。
+
+### Fixed
+
+- **跨任务并发上限可被绕过**：`task_run` 原先只在 `start:<owner>:<task>` 上加锁，
+  同一会话对**不同任务**并发发起时，各自持有不同的锁，都能通过 `maxActiveRunsPerOwner`
+  检查。改为每个 owner 一把共享锁，`TaskService` 与 `RunService` 复用同一实例，
+  任务创建、更新、归档与定时变更也不再与运行创建交错。
+- **定时操作与本地写入不是原子的**：`task_schedule` 先在宿主建规则、再改本地任务，
+  本地写失败时会留下「宿主有规则、本地无引用」的孤儿。现在本地写入被移进
+  `ScheduleLedger.run()` 的临界区，失败即整体标记为 `failed` 并由对账认领。
+- **对账过于乐观**：`update` / `pause` / `resume` 原先只要宿主规则存在就判 `succeeded`，
+  即使本地 `scheduleRef` 从未更新、或宿主上的实际时间规则与请求不符。现在要求
+  宿主 timing、本地 timing 与操作意图三者一致才算成功，否则留 `reconciling` 交人工判断；
+  宿主读取抛错也不再被当成「规则不存在」。
+- **回滚不完整**：创建失败时漏删 `run_index` 与 `active_runs` 占位，可能让并发计数久占不减；
+  现在按索引 → 占位 → 运行 → 步骤 → 幂等占位的顺序清理。
+- **状态索引陈旧**：`begin` / `reportStep` 在状态变化后未刷新 `run_index` 与租约，
+  历史查询会按旧状态过滤；`listRunIndexByTask` 现在以运行记录本身的状态为准，
+  索引只用于分页键。
+- **任务列表的最近运行**：同一毫秒内启动的运行按 `runId` 兜底比较，不再依赖插入顺序的偶然结果。
+- **损坏的游标**：任务列表改走统一的 `decodeCursor`，畸形游标按第一页处理而不是抛错。
+- `KeyedMutex` 在无等待者时删除 `tails` 条目（长跑进程里的 key 泄漏）。
+
+### Tests
+
+- 6 项新用例（155 项全绿）：跨任务并发上限、重叠请求只建一条宿主规则、
+  本地写失败后的对账认领、删除操作需两侧都落地才结算、历史按真实运行状态过滤、
+  最近五次运行排序与畸形游标。
+
 ## [1.2.3] - 2026-11-26
 
 发布就绪补丁（按《插件市场发布执行手册》逐项核对后的修复，无业务行为变更）。

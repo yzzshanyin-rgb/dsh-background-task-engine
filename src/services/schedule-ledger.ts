@@ -9,12 +9,13 @@
  * blindly creates or deletes a second time.
  */
 
+import { isDeepStrictEqual } from 'node:util';
 import { TaskEngineError, sanitizeMessage } from '../errors.js';
 import { newRunId } from '../utils/id.js';
 import type { ScheduleAction, ScheduleOpRecord, TaskRecord } from '../domain/records.js';
 import type { AuditTrail } from './audit.js';
 import type { Repository } from '../storage/repository.js';
-import { describeTiming, type ScheduleAdapter, type TimingInput } from './schedule-adapter.js';
+import { describeTiming, toHostTiming, type ScheduleAdapter, type TimingInput } from './schedule-adapter.js';
 
 export interface ScheduleOpInput {
   action: ScheduleAction;
@@ -44,10 +45,8 @@ export class ScheduleLedger {
   /**
    * Journal one mutation.
    *
-   * `pending` is written before the host call; `processing` immediately after,
-   * so a crash is distinguishable from a request that never left. On success
-   * the row records the schedule id the host assigned, which is the only thing
-   * a later reconciliation needs.
+   * Persist `processing` before calling the host. A crash in that phase leaves
+   * the outcome uncertain until reconciliation can compare the records.
    */
   async run<T>(input: ScheduleOpInput, work: (op: ScheduleOpRecord) => Promise<T>): Promise<{ result: T; op: ScheduleOpRecord }> {
     const at = this.now().toISOString();
@@ -133,11 +132,21 @@ export class ScheduleLedger {
         }
         let scheduleId = op.scheduleId;
         if (scheduleId !== undefined) {
-          const exists = await this.adapter.view(scheduleId).catch(() => undefined);
-          if (exists === undefined) scheduleId = undefined;
+          try {
+            if (await this.adapter.view(scheduleId) === undefined) scheduleId = undefined;
+          } catch {
+            await this.mark(op, 'reconciling', '无法读取宿主定时规则', at);
+            ambiguous += 1;
+            continue;
+          }
         }
         if (scheduleId === undefined) {
-          const matches = await this.adapter.findByTaskId(op.taskId).catch(() => []);
+          const matches = await this.adapter.findByTaskId(op.taskId).catch(() => undefined);
+          if (matches === undefined) {
+            await this.mark(op, 'reconciling', '无法读取宿主定时规则', at);
+            ambiguous += 1;
+            continue;
+          }
           if (matches.length === 1) {
             scheduleId = matches[0]?.id;
             notes.push(`${op.operationId}: 已按投递提示词匹配到唯一规则 ${String(scheduleId)}，采纳为任务的定时规则。`);
@@ -154,22 +163,33 @@ export class ScheduleLedger {
           }
         }
         const task = this.repo.getTask(op.taskId);
-        if (task !== undefined && task.scheduleRef === undefined && scheduleId !== undefined) {
-          await this.repo.mutateTask(task.taskId, undefined, (current) => ({
-            ...current,
-            revision: current.revision + 1,
-            scheduleRef: {
-              scheduleId,
-              timingKind: 'unknown',
-              timing: {},
-              state: 'active',
-              title: `后台任务 · ${current.title}`.slice(0, 120),
-              createdAt: at,
-              updatedAt: at,
-            },
-          })).catch((error: unknown) => {
-            notes.push(`${op.operationId}: 采纳规则失败 ${sanitizeMessage(String(error))}`);
-          });
+        if (!task || task.status === 'archived' || (task.scheduleRef && task.scheduleRef.scheduleId !== scheduleId)) {
+          await this.mark({ ...op, scheduleId }, 'reconciling', '宿主规则与当前任务关联不一致', at);
+          ambiguous += 1;
+          continue;
+        }
+        if (!task.scheduleRef && scheduleId !== undefined) {
+          const id = scheduleId;
+          try {
+            const timing = op.timing as TimingInput | undefined;
+            await this.repo.mutateTask(task.taskId, task.revision, (current) => ({
+              ...current,
+              revision: current.revision + 1,
+              scheduleRef: {
+                scheduleId: id,
+                timingKind: timing?.kind ?? 'unknown',
+                timing: timing === undefined ? {} : toHostTiming(timing),
+                state: 'active',
+                title: `后台任务 · ${current.title}`.slice(0, 120),
+                createdAt: at,
+                updatedAt: at,
+              },
+            }));
+          } catch (error) {
+            await this.mark({ ...op, scheduleId }, 'reconciling', String(error), at);
+            ambiguous += 1;
+            continue;
+          }
         }
         await this.mark({ ...op, scheduleId }, 'succeeded', undefined, at);
         settled += 1;
@@ -189,14 +209,28 @@ export class ScheduleLedger {
         }
         // Deleting an absent rule is the same outcome as deleting a present one,
         // so retrying is safe and needs no judgement.
-        await this.adapter.remove(op.scheduleId, op.ownerSessionId).catch(() => undefined);
+        try {
+          await this.adapter.remove(op.scheduleId, op.ownerSessionId);
+          const task = this.repo.getTask(op.taskId);
+          if (task?.scheduleRef?.scheduleId === op.scheduleId) {
+            await this.repo.mutateTask(task.taskId, task.revision, (current) => {
+              const next = { ...current, revision: current.revision + 1 };
+              delete next.scheduleRef;
+              return next;
+            });
+          }
+        } catch (error) {
+          await this.mark(op, 'reconciling', String(error), at);
+          ambiguous += 1;
+          continue;
+        }
         await this.mark(op, 'succeeded', undefined, at);
         settled += 1;
         continue;
       }
 
-      // update / pause / resume: the rule must still exist for the change to mean
-      // anything. Re-applying is a no-op when the previous attempt landed.
+      // Check both records before settling an update. Replaying an older
+      // operation could overwrite a later change to the same schedule.
       if (!this.adapter.available) {
         await this.mark(op, 'reconciling', '宿主未挂载 Schedule 能力', at);
         ambiguous += 1;
@@ -207,18 +241,17 @@ export class ScheduleLedger {
         failed += 1;
         continue;
       }
-      const exists = await this.adapter.view(op.scheduleId).catch(() => undefined);
-      if (exists === undefined) {
-        await this.mark(op, 'failed', '定时规则已不存在', at);
-        const task = this.repo.getTask(op.taskId);
-        if (task?.scheduleRef !== undefined) {
-          await this.repo.mutateTask(task.taskId, undefined, (current) => ({
-            ...current,
-            revision: current.revision + 1,
-            scheduleRef: current.scheduleRef === undefined ? undefined : { ...current.scheduleRef, state: 'unlinked', updatedAt: at },
-          })).catch(() => undefined);
-        }
-        failed += 1;
+      const live = await this.adapter.view(op.scheduleId).catch(() => undefined);
+      const ref = this.repo.getTask(op.taskId)?.scheduleRef;
+      const timing = op.timing as TimingInput | undefined;
+      const expectedState = op.action === 'pause' ? 'paused' : 'active';
+      const applied = op.action === 'update'
+        ? timing !== undefined && isDeepStrictEqual(live?.timing, toHostTiming(timing))
+          && isDeepStrictEqual(ref?.timing, live?.timing)
+        : live?.status === expectedState && ref?.state === expectedState;
+      if (ref?.scheduleId !== op.scheduleId || !applied) {
+        await this.mark(op, 'reconciling', '无法确认宿主规则和本地关联均已应用此变更', at);
+        ambiguous += 1;
         continue;
       }
       await this.mark(op, 'succeeded', undefined, at);

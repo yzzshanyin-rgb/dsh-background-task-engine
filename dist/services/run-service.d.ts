@@ -15,6 +15,7 @@
 import type { RunRecord, RunStepRecord, StepError, FailureCategory } from '../domain/records.js';
 import { runIndexKey } from '../domain/records.js';
 import { orderedSteps, runTransitionProblem } from '../domain/state.js';
+import { KeyedMutex } from '../utils/mutex.js';
 import type { EngineConfig } from '../config.js';
 import type { AuditTrail } from './audit.js';
 import type { Repository } from '../storage/repository.js';
@@ -105,8 +106,9 @@ export declare class RunService {
     private readonly config;
     private readonly audit;
     private readonly now;
+    private readonly ownerLock;
     private readonly lock;
-    constructor(repo: Repository, config: EngineConfig, audit: AuditTrail, now: () => Date);
+    constructor(repo: Repository, config: EngineConfig, audit: AuditTrail, now: () => Date, ownerLock?: KeyedMutex);
     /**
      * Create (or find) the run for one trigger.
      *

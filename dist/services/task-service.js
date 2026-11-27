@@ -11,7 +11,8 @@ import { SCHEMA_VERSION, } from '../domain/records.js';
 import { newStepId, newTaskId } from '../utils/id.js';
 import { nowIso } from '../utils/time.js';
 import { truncateText } from '../utils/text.js';
-import { compareDesc, paginate } from '../utils/page.js';
+import { compareDesc, decodeCursor, paginate } from '../utils/page.js';
+import { KeyedMutex } from '../utils/mutex.js';
 import { describeTiming, toHostTiming } from './schedule-adapter.js';
 const stepInputSchema = z.object({
     title: z.string().trim().min(1, '步骤标题不能为空').max(120),
@@ -26,16 +27,21 @@ export class TaskService {
     schedules;
     ledger;
     now;
-    constructor(repo, config, audit, schedules, ledger, now = nowIso) {
+    ownerLock;
+    constructor(repo, config, audit, schedules, ledger, now = nowIso, ownerLock = new KeyedMutex()) {
         this.repo = repo;
         this.config = config;
         this.audit = audit;
         this.schedules = schedules;
         this.ledger = ledger;
         this.now = now;
+        this.ownerLock = ownerLock;
     }
     // ---------------------------------------------------------------- create
     async create(input) {
+        return this.ownerLock.runExclusive(input.sessionId, () => this.createTask(input));
+    }
+    async createTask(input) {
         const owner = input.sessionId;
         let source;
         if (input.copyFromTaskId) {
@@ -128,8 +134,9 @@ export class TaskService {
             if (run.taskOwnerSessionId !== owner)
                 continue;
             const current = lastRunByTask.get(run.taskId);
-            if (!current || run.startedAt > current.startedAt)
+            if (!current || compareDesc(run.startedAt, run.runId, current.startedAt, current.runId) < 0) {
                 lastRunByTask.set(run.taskId, run);
+            }
         }
         const filtered = this.repo
             .listTasksByOwner(owner)
@@ -144,7 +151,7 @@ export class TaskService {
             .sort((a, b) => compareDesc(a.updatedAt, a.taskId, b.updatedAt, b.taskId));
         const page = paginate(filtered, {
             limit: input.limit ?? 20,
-            cursor: decodeCursorSafe(input.cursor),
+            cursor: decodeCursor(input.cursor),
             tsOf: (task) => task.updatedAt,
             idOf: (task) => task.taskId,
         });
@@ -172,11 +179,16 @@ export class TaskService {
     // ------------------------------------------------------------------- get
     get(owner, taskId, options = {}) {
         const task = this.repo.requireOwnedTask(taskId, owner);
-        const recentRuns = options.includeRuns === false ? [] : this.repo.listRunsByTask(taskId).slice(0, 5);
+        const recentRuns = options.includeRuns === false ? [] : this.repo.listRunsByTask(taskId)
+            .sort((a, b) => compareDesc(a.startedAt, a.runId, b.startedAt, b.runId))
+            .slice(0, 5);
         return { task, recentRuns };
     }
     // ---------------------------------------------------------------- update
     async update(input) {
+        return this.ownerLock.runExclusive(input.sessionId, () => this.updateTask(input));
+    }
+    async updateTask(input) {
         const task = this.repo.requireOwnedTask(input.taskId, input.sessionId);
         if (task.status === 'archived') {
             throw new TaskEngineError('TASK_PERMISSION_DENIED', '任务已归档，只能查看历史，不能修改');
@@ -273,6 +285,9 @@ export class TaskService {
     }
     // --------------------------------------------------------------- archive
     async archive(input) {
+        return this.ownerLock.runExclusive(input.sessionId, () => this.archiveTask(input));
+    }
+    async archiveTask(input) {
         const task = this.repo.requireOwnedTask(input.taskId, input.sessionId);
         if (task.status === 'archived')
             return task;
@@ -317,6 +332,9 @@ export class TaskService {
     }
     // ------------------------------------------------------- schedule linkage
     async scheduleCreate(input) {
+        return this.ownerLock.runExclusive(input.sessionId, () => this.createSchedule(input));
+    }
+    async createSchedule(input) {
         const task = this.repo.requireOwnedTask(input.taskId, input.sessionId);
         if (task.status === 'archived') {
             throw new TaskEngineError('TASK_PERMISSION_DENIED', '任务已归档，不能创建定时规则');
@@ -324,28 +342,35 @@ export class TaskService {
         if (task.scheduleRef) {
             throw new TaskEngineError('TASK_SCHEDULE_FAILED', `任务已有定时规则 ${task.scheduleRef.scheduleId}；请使用 action="update" 修改或 action="delete" 后重建`);
         }
-        const { result: created } = await this.ledger.run({ action: 'create', task, sessionId: input.sessionId, timing: input.timing }, async () => this.schedules.create({
-            taskId: task.taskId,
-            taskTitle: task.title,
-            timing: input.timing,
-            sessionId: input.sessionId,
-        }));
-        const stamp = this.now();
-        const ref = {
-            scheduleId: created.scheduleId,
-            timingKind: input.timing.kind,
-            timing: toHostTiming(input.timing),
-            state: 'active',
-            title: `后台任务 · ${task.title}`.slice(0, 120),
-            createdAt: stamp,
-            updatedAt: stamp,
-        };
-        const updated = await this.repo.mutateTask(task.taskId, undefined, (current) => ({
-            ...current,
-            scheduleRef: ref,
-            revision: current.revision + 1,
-            updatedAt: stamp,
-        }));
+        const hasUnsettledCreate = this.repo.listScheduleOps(task.taskId)
+            .some((op) => op.action === 'create' && op.status !== 'succeeded');
+        if (hasUnsettledCreate && (await this.schedules.findByTaskId(task.taskId)).length > 0) {
+            throw new TaskEngineError('TASK_SCHEDULE_FAILED', '宿主已有此任务的规则，请先对账以确认关联。');
+        }
+        const { result } = await this.ledger.run({ action: 'create', task, sessionId: input.sessionId, timing: input.timing }, async () => {
+            const created = await this.schedules.create({
+                taskId: task.taskId,
+                taskTitle: task.title,
+                timing: input.timing,
+                sessionId: input.sessionId,
+            });
+            const stamp = this.now();
+            const ref = {
+                scheduleId: created.scheduleId,
+                timingKind: input.timing.kind,
+                timing: toHostTiming(input.timing),
+                state: 'active',
+                title: `后台任务 · ${task.title}`.slice(0, 120),
+                createdAt: stamp,
+                updatedAt: stamp,
+            };
+            const updated = await this.repo.mutateTask(task.taskId, undefined, (current) => ({
+                ...current,
+                scheduleRef: ref,
+                revision: current.revision + 1,
+            }));
+            return { ...updated, scheduleId: created.scheduleId };
+        });
         this.audit.record({
             name: 'task.schedule.changed',
             taskId: task.taskId,
@@ -353,11 +378,14 @@ export class TaskService {
             to: 'active',
             sessionId: input.sessionId,
             source: 'task_schedule:create',
-            detail: `scheduleId=${created.scheduleId}`,
+            detail: `scheduleId=${result.scheduleId}`,
         });
-        return { ...updated, scheduleId: created.scheduleId };
+        return result;
     }
     async scheduleUpdate(input) {
+        return this.ownerLock.runExclusive(input.sessionId, () => this.updateSchedule(input));
+    }
+    async updateSchedule(input) {
         const task = this.repo.requireOwnedTask(input.taskId, input.sessionId);
         const ref = task.scheduleRef;
         if (!ref)
@@ -410,6 +438,9 @@ export class TaskService {
         return updated;
     }
     async scheduleSetActive(input) {
+        return this.ownerLock.runExclusive(input.sessionId, () => this.setScheduleActive(input));
+    }
+    async setScheduleActive(input) {
         const task = this.repo.requireOwnedTask(input.taskId, input.sessionId);
         const ref = task.scheduleRef;
         if (!ref)
@@ -442,15 +473,21 @@ export class TaskService {
         return { task: updated, changed: true };
     }
     async scheduleDelete(input) {
+        return this.ownerLock.runExclusive(input.sessionId, () => this.deleteSchedule(input));
+    }
+    async deleteSchedule(input) {
         const task = this.repo.requireOwnedTask(input.taskId, input.sessionId);
         const ref = task.scheduleRef;
         if (!ref)
             throw new TaskEngineError('TASK_SCHEDULE_FAILED', '任务没有关联的定时规则');
-        const { result: removed } = await this.ledger.run({ action: 'delete', task, sessionId: input.sessionId, scheduleId: ref.scheduleId }, async () => this.schedules.remove(ref.scheduleId, input.sessionId));
-        const updated = await this.repo.mutateTask(task.taskId, undefined, (current) => {
-            const next = { ...current, revision: current.revision + 1, updatedAt: this.now() };
-            delete next.scheduleRef;
-            return next;
+        const { result } = await this.ledger.run({ action: 'delete', task, sessionId: input.sessionId, scheduleId: ref.scheduleId }, async () => {
+            const removed = await this.schedules.remove(ref.scheduleId, input.sessionId);
+            const updated = await this.repo.mutateTask(task.taskId, undefined, (current) => {
+                const next = { ...current, revision: current.revision + 1 };
+                delete next.scheduleRef;
+                return next;
+            });
+            return { task: updated, alreadyGone: removed.alreadyGone };
         });
         this.audit.record({
             name: 'task.schedule.changed',
@@ -461,7 +498,7 @@ export class TaskService {
             source: 'task_schedule:delete',
             detail: `scheduleId=${ref.scheduleId}`,
         });
-        return { task: updated, alreadyGone: removed.alreadyGone };
+        return result;
     }
     /**
      * Journal rows for one task, newest last.
@@ -506,15 +543,5 @@ export class TaskService {
             detail: `scheduleId=${ref.scheduleId}`,
         });
         return { pending: result.pending };
-    }
-}
-function decodeCursorSafe(cursor) {
-    if (!cursor)
-        return undefined;
-    try {
-        return JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
-    }
-    catch {
-        return undefined;
     }
 }

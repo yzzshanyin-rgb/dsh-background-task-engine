@@ -36,10 +36,8 @@ export declare class ScheduleLedger {
     /**
      * Journal one mutation.
      *
-     * `pending` is written before the host call; `processing` immediately after,
-     * so a crash is distinguishable from a request that never left. On success
-     * the row records the schedule id the host assigned, which is the only thing
-     * a later reconciliation needs.
+     * Persist `processing` before calling the host. A crash in that phase leaves
+     * the outcome uncertain until reconciliation can compare the records.
      */
     run<T>(input: ScheduleOpInput, work: (op: ScheduleOpRecord) => Promise<T>): Promise<{
         result: T;

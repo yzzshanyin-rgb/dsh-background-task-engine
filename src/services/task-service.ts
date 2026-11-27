@@ -20,7 +20,8 @@ import {
 import { newStepId, newTaskId } from '../utils/id.js'
 import { nowIso } from '../utils/time.js'
 import { truncateText } from '../utils/text.js'
-import { compareDesc, paginate, type CursorPayload } from '../utils/page.js'
+import { compareDesc, decodeCursor, paginate } from '../utils/page.js'
+import { KeyedMutex } from '../utils/mutex.js'
 import type { Repository } from '../storage/repository.js'
 import type { AuditTrail } from './audit.js'
 import { describeTiming, toHostTiming, type ScheduleAdapter, type TimingInput } from './schedule-adapter.js'
@@ -81,11 +82,16 @@ export class TaskService {
     private readonly schedules: ScheduleAdapter,
     private readonly ledger: ScheduleLedger,
     private readonly now: () => string = nowIso,
+    private readonly ownerLock = new KeyedMutex(),
   ) {}
 
   // ---------------------------------------------------------------- create
 
   async create(input: CreateTaskInput): Promise<TaskRecord> {
+    return this.ownerLock.runExclusive(input.sessionId, () => this.createTask(input))
+  }
+
+  private async createTask(input: CreateTaskInput): Promise<TaskRecord> {
     const owner = input.sessionId
     let source: TaskRecord | undefined
     if (input.copyFromTaskId) {
@@ -191,7 +197,9 @@ export class TaskService {
     for (const run of runs) {
       if (run.taskOwnerSessionId !== owner) continue
       const current = lastRunByTask.get(run.taskId)
-      if (!current || run.startedAt > current.startedAt) lastRunByTask.set(run.taskId, run)
+      if (!current || compareDesc(run.startedAt, run.runId, current.startedAt, current.runId) < 0) {
+        lastRunByTask.set(run.taskId, run)
+      }
     }
 
     const filtered = this.repo
@@ -209,7 +217,7 @@ export class TaskService {
 
     const page = paginate(filtered, {
       limit: input.limit ?? 20,
-      cursor: decodeCursorSafe(input.cursor),
+      cursor: decodeCursor(input.cursor),
       tsOf: (task) => task.updatedAt,
       idOf: (task) => task.taskId,
     })
@@ -244,13 +252,19 @@ export class TaskService {
     recentRuns: RunRecord[]
   } {
     const task = this.repo.requireOwnedTask(taskId, owner)
-    const recentRuns = options.includeRuns === false ? [] : this.repo.listRunsByTask(taskId).slice(0, 5)
+    const recentRuns = options.includeRuns === false ? [] : this.repo.listRunsByTask(taskId)
+      .sort((a, b) => compareDesc(a.startedAt, a.runId, b.startedAt, b.runId))
+      .slice(0, 5)
     return { task, recentRuns }
   }
 
   // ---------------------------------------------------------------- update
 
   async update(input: UpdateTaskInput): Promise<TaskRecord> {
+    return this.ownerLock.runExclusive(input.sessionId, () => this.updateTask(input))
+  }
+
+  private async updateTask(input: UpdateTaskInput): Promise<TaskRecord> {
     const task = this.repo.requireOwnedTask(input.taskId, input.sessionId)
     if (task.status === 'archived') {
       throw new TaskEngineError('TASK_PERMISSION_DENIED', '任务已归档，只能查看历史，不能修改')
@@ -353,6 +367,10 @@ export class TaskService {
   // --------------------------------------------------------------- archive
 
   async archive(input: { sessionId: string; taskId: string; expectedRevision: number }): Promise<TaskRecord> {
+    return this.ownerLock.runExclusive(input.sessionId, () => this.archiveTask(input))
+  }
+
+  private async archiveTask(input: { sessionId: string; taskId: string; expectedRevision: number }): Promise<TaskRecord> {
     const task = this.repo.requireOwnedTask(input.taskId, input.sessionId)
     if (task.status === 'archived') return task
     if (task.revision !== input.expectedRevision) {
@@ -413,6 +431,14 @@ export class TaskService {
     taskId: string
     timing: TimingInput
   }): Promise<TaskRecord & { scheduleId: string }> {
+    return this.ownerLock.runExclusive(input.sessionId, () => this.createSchedule(input))
+  }
+
+  private async createSchedule(input: {
+    sessionId: string
+    taskId: string
+    timing: TimingInput
+  }): Promise<TaskRecord & { scheduleId: string }> {
     const task = this.repo.requireOwnedTask(input.taskId, input.sessionId)
     if (task.status === 'archived') {
       throw new TaskEngineError('TASK_PERMISSION_DENIED', '任务已归档，不能创建定时规则')
@@ -423,32 +449,38 @@ export class TaskService {
         `任务已有定时规则 ${task.scheduleRef.scheduleId}；请使用 action="update" 修改或 action="delete" 后重建`,
       )
     }
-    const { result: created } = await this.ledger.run(
+    const hasUnsettledCreate = this.repo.listScheduleOps(task.taskId)
+      .some((op) => op.action === 'create' && op.status !== 'succeeded')
+    if (hasUnsettledCreate && (await this.schedules.findByTaskId(task.taskId)).length > 0) {
+      throw new TaskEngineError('TASK_SCHEDULE_FAILED', '宿主已有此任务的规则，请先对账以确认关联。')
+    }
+    const { result } = await this.ledger.run(
       { action: 'create', task, sessionId: input.sessionId, timing: input.timing },
-      async () =>
-        this.schedules.create({
+      async () => {
+        const created = await this.schedules.create({
           taskId: task.taskId,
           taskTitle: task.title,
           timing: input.timing,
           sessionId: input.sessionId,
-        }),
+        })
+        const stamp = this.now()
+        const ref: ScheduleRef = {
+          scheduleId: created.scheduleId,
+          timingKind: input.timing.kind,
+          timing: toHostTiming(input.timing) as unknown as Record<string, unknown>,
+          state: 'active',
+          title: `后台任务 · ${task.title}`.slice(0, 120),
+          createdAt: stamp,
+          updatedAt: stamp,
+        }
+        const updated = await this.repo.mutateTask(task.taskId, undefined, (current) => ({
+          ...current,
+          scheduleRef: ref,
+          revision: current.revision + 1,
+        }))
+        return { ...updated, scheduleId: created.scheduleId }
+      },
     )
-    const stamp = this.now()
-    const ref: ScheduleRef = {
-      scheduleId: created.scheduleId,
-      timingKind: input.timing.kind,
-      timing: toHostTiming(input.timing) as unknown as Record<string, unknown>,
-      state: 'active',
-      title: `后台任务 · ${task.title}`.slice(0, 120),
-      createdAt: stamp,
-      updatedAt: stamp,
-    }
-    const updated = await this.repo.mutateTask(task.taskId, undefined, (current) => ({
-      ...current,
-      scheduleRef: ref,
-      revision: current.revision + 1,
-      updatedAt: stamp,
-    }))
     this.audit.record({
       name: 'task.schedule.changed',
       taskId: task.taskId,
@@ -456,12 +488,20 @@ export class TaskService {
       to: 'active',
       sessionId: input.sessionId,
       source: 'task_schedule:create',
-      detail: `scheduleId=${created.scheduleId}`,
+      detail: `scheduleId=${result.scheduleId}`,
     })
-    return { ...updated, scheduleId: created.scheduleId }
+    return result
   }
 
   async scheduleUpdate(input: {
+    sessionId: string
+    taskId: string
+    timing: TimingInput
+  }): Promise<TaskRecord> {
+    return this.ownerLock.runExclusive(input.sessionId, () => this.updateSchedule(input))
+  }
+
+  private async updateSchedule(input: {
     sessionId: string
     taskId: string
     timing: TimingInput
@@ -526,6 +566,14 @@ export class TaskService {
     taskId: string
     active: boolean
   }): Promise<{ task: TaskRecord; changed: boolean }> {
+    return this.ownerLock.runExclusive(input.sessionId, () => this.setScheduleActive(input))
+  }
+
+  private async setScheduleActive(input: {
+    sessionId: string
+    taskId: string
+    active: boolean
+  }): Promise<{ task: TaskRecord; changed: boolean }> {
     const task = this.repo.requireOwnedTask(input.taskId, input.sessionId)
     const ref = task.scheduleRef
     if (!ref) throw new TaskEngineError('TASK_SCHEDULE_FAILED', '任务尚未关联定时规则')
@@ -562,18 +610,25 @@ export class TaskService {
   }
 
   async scheduleDelete(input: { sessionId: string; taskId: string }): Promise<{ task: TaskRecord; alreadyGone: boolean }> {
+    return this.ownerLock.runExclusive(input.sessionId, () => this.deleteSchedule(input))
+  }
+
+  private async deleteSchedule(input: { sessionId: string; taskId: string }): Promise<{ task: TaskRecord; alreadyGone: boolean }> {
     const task = this.repo.requireOwnedTask(input.taskId, input.sessionId)
     const ref = task.scheduleRef
     if (!ref) throw new TaskEngineError('TASK_SCHEDULE_FAILED', '任务没有关联的定时规则')
-    const { result: removed } = await this.ledger.run(
+    const { result } = await this.ledger.run(
       { action: 'delete', task, sessionId: input.sessionId, scheduleId: ref.scheduleId },
-      async () => this.schedules.remove(ref.scheduleId, input.sessionId),
+      async () => {
+        const removed = await this.schedules.remove(ref.scheduleId, input.sessionId)
+        const updated = await this.repo.mutateTask(task.taskId, undefined, (current) => {
+          const next: TaskRecord = { ...current, revision: current.revision + 1 }
+          delete next.scheduleRef
+          return next
+        })
+        return { task: updated, alreadyGone: removed.alreadyGone }
+      },
     )
-    const updated = await this.repo.mutateTask(task.taskId, undefined, (current) => {
-      const next: TaskRecord = { ...current, revision: current.revision + 1, updatedAt: this.now() }
-      delete next.scheduleRef
-      return next
-    })
     this.audit.record({
       name: 'task.schedule.changed',
       taskId: task.taskId,
@@ -583,7 +638,7 @@ export class TaskService {
       source: 'task_schedule:delete',
       detail: `scheduleId=${ref.scheduleId}`,
     })
-    return { task: updated, alreadyGone: removed.alreadyGone }
+    return result
   }
 
   /**
@@ -641,14 +696,5 @@ export class TaskService {
       detail: `scheduleId=${ref.scheduleId}`,
     })
     return { pending: result.pending }
-  }
-}
-
-function decodeCursorSafe(cursor: string | undefined): CursorPayload | undefined {
-  if (!cursor) return undefined
-  try {
-    return JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as CursorPayload
-  } catch {
-    return undefined
   }
 }

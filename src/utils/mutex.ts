@@ -34,8 +34,12 @@ export class KeyedMutex {
     } finally {
       release();
       const left = (this.depth.get(key) ?? 1) - 1;
-      if (left <= 0) this.depth.delete(key);
-      else this.depth.set(key, left);
+      if (left <= 0) {
+        this.depth.delete(key);
+        this.tails.delete(key);
+      } else {
+        this.depth.set(key, left);
+      }
     }
   }
 }

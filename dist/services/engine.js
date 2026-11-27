@@ -25,6 +25,7 @@ import { ScheduleLedger } from './schedule-ledger.js';
 import { TaskService } from './task-service.js';
 import { RunService } from './run-service.js';
 import { nowIso } from '../utils/time.js';
+import { KeyedMutex } from '../utils/mutex.js';
 export class TaskEngine {
     ctx;
     now;
@@ -83,8 +84,9 @@ export class TaskEngine {
             this.repo = new Repository(domain, () => new Date(this.now()));
             this.audit = new AuditTrail(this.ctx, this.ctx.logger);
             this.ledger = new ScheduleLedger(this.repo, this.schedules, this.audit, () => new Date(this.now()));
-            this.tasks = new TaskService(this.repo, this.config, this.audit, this.schedules, this.ledger, this.now);
-            this.runs = new RunService(this.repo, this.config, this.audit, () => new Date(this.now()));
+            const ownerLock = new KeyedMutex();
+            this.tasks = new TaskService(this.repo, this.config, this.audit, this.schedules, this.ledger, this.now, ownerLock);
+            this.runs = new RunService(this.repo, this.config, this.audit, () => new Date(this.now()), ownerLock);
             this.diagnostics.migrations = await runMigrations(domain, MIGRATIONS, () => new Date(this.now()), (message) => this.ctx.logger?.info?.(message));
             const integrity = verifyIntegrity(domain);
             this.diagnostics.integrity = integrity;

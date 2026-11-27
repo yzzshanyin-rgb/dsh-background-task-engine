@@ -22,10 +22,10 @@ npm test               # vitest run
 | Services (time zones) | `tests/services/schedule-time.test.ts` | 13 | PASS |
 | Rendering | `tests/tools/render.test.ts` | 13 | PASS |
 | Integration (tools) | `tests/integration/tools.test.ts` | 35 | PASS |
-| Integration (reliability) | `tests/integration/reliability.test.ts` | 14 | PASS |
+| Integration (reliability) | `tests/integration/reliability.test.ts` | 20 | PASS |
 | Integration (board routes) | `tests/integration/http-routes.test.ts` | 10 | PASS |
 | Integration (client bundle) | `tests/integration/client-bundle.test.ts` | 17 | PASS |
-| **Total** | 9 files | **149** | **all passing** |
+| **Total** | 9 files | **155** | **all passing** |
 
 ```console
 $ npx vitest run
@@ -34,11 +34,11 @@ $ npx vitest run
  ✓ tests/storage/repository.test.ts (18 tests) 16ms
  ✓ tests/services/schedule-time.test.ts (13 tests) 28ms
  ✓ tests/integration/http-routes.test.ts (10 tests) 33ms
- ✓ tests/integration/reliability.test.ts (14 tests) 53ms
+ ✓ tests/integration/reliability.test.ts (20 tests) 42ms
  ✓ tests/tools/render.test.ts (13 tests) 63ms
  ✓ tests/integration/tools.test.ts (35 tests) 146ms
  ✓ tests/domain/config.test.ts (7 tests) 5ms
-      Tests  149 passed (149)
+      Tests  155 passed (155)
 ```
 
 ## Release gates (V1.2.3)
@@ -46,7 +46,7 @@ $ npx vitest run
 | 门槛 | 结果 | 证据 |
 |---|---|---|
 | 包完整性（72 文件、必含项齐全、无源码/测试入包） | PASS | `release-evidence/v1.2.3/01-package.md` |
-| 干净克隆 `npm ci` → build → typecheck → test | PASS（149） | `release-evidence/v1.2.3/02-build-tests.md` |
+| 干净克隆 `npm ci` → build → typecheck → test | PASS（155） | `release-evidence/v1.2.3/02-build-tests.md` |
 | 真实宿主安装、14 工具、任务→心跳→步骤→收尾 | PASS | `release-evidence/v1.2.3/03-host-install.md` |
 | StorageDomain 打开 + v1→v2 迁移 + 重复启动幂等 | PASS | `release-evidence/v1.2.3/06-migration.md` |
 | 看板路由安全边界（SEC-01..06） | 已逐条记录，SEC-03 为设计限制 | `release-evidence/v1.2.3/05-security.md` |

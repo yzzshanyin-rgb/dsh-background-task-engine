@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import type { EngineConfig } from '../config.js';
 import { type RunRecord, type ScheduleRef, type TaskRecord, type TaskStatus } from '../domain/records.js';
+import { KeyedMutex } from '../utils/mutex.js';
 import type { Repository } from '../storage/repository.js';
 import type { AuditTrail } from './audit.js';
 import { type ScheduleAdapter, type TimingInput } from './schedule-adapter.js';
@@ -78,8 +79,10 @@ export declare class TaskService {
     private readonly schedules;
     private readonly ledger;
     private readonly now;
-    constructor(repo: Repository, config: EngineConfig, audit: AuditTrail, schedules: ScheduleAdapter, ledger: ScheduleLedger, now?: () => string);
+    private readonly ownerLock;
+    constructor(repo: Repository, config: EngineConfig, audit: AuditTrail, schedules: ScheduleAdapter, ledger: ScheduleLedger, now?: () => string, ownerLock?: KeyedMutex);
     create(input: CreateTaskInput): Promise<TaskRecord>;
+    private createTask;
     private normaliseSteps;
     list(input: ListTasksInput): {
         items: TaskSummaryRow[];
@@ -93,6 +96,7 @@ export declare class TaskService {
         recentRuns: RunRecord[];
     };
     update(input: UpdateTaskInput): Promise<TaskRecord>;
+    private updateTask;
     private applyStatusWithSchedule;
     private patchScheduleRef;
     archive(input: {
@@ -100,6 +104,7 @@ export declare class TaskService {
         taskId: string;
         expectedRevision: number;
     }): Promise<TaskRecord>;
+    private archiveTask;
     scheduleCreate(input: {
         sessionId: string;
         taskId: string;
@@ -107,11 +112,13 @@ export declare class TaskService {
     }): Promise<TaskRecord & {
         scheduleId: string;
     }>;
+    private createSchedule;
     scheduleUpdate(input: {
         sessionId: string;
         taskId: string;
         timing: TimingInput;
     }): Promise<TaskRecord>;
+    private updateSchedule;
     scheduleSetActive(input: {
         sessionId: string;
         taskId: string;
@@ -120,6 +127,7 @@ export declare class TaskService {
         task: TaskRecord;
         changed: boolean;
     }>;
+    private setScheduleActive;
     scheduleDelete(input: {
         sessionId: string;
         taskId: string;
@@ -127,6 +135,7 @@ export declare class TaskService {
         task: TaskRecord;
         alreadyGone: boolean;
     }>;
+    private deleteSchedule;
     /**
      * Journal rows for one task, newest last.
      *

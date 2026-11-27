@@ -423,7 +423,12 @@ export class Repository {
       .filter(([key]) => key.startsWith(prefix))
       .map(([, row]) => row)
       .sort((a, b) => (a.startedAt === b.startedAt ? (a.runId < b.runId ? 1 : -1) : (a.startedAt < b.startedAt ? 1 : -1)));
-    const filtered = options.status === undefined ? all : all.filter((row) => row.status === options.status);
+    // A status write can reach the run before its index row. Always filter
+    // against the run so pages also work with indexes written by older versions.
+    const filtered = all.filter((row) => {
+      const run = this.runs.get(row.runId);
+      return run !== undefined && (options.status === undefined || run.status === options.status);
+    });
     const before = options.before;
     const paged = before === undefined
       ? filtered
